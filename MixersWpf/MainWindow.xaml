@@ -16,7 +16,7 @@
         RenderOptions.BitmapScalingMode="HighQuality">
 
     <Border x:Name="RootBorder"
-            CornerRadius="12"
+            CornerRadius="0"
             BorderThickness="1"
             ClipToBounds="True">
         <Border.RenderTransform>

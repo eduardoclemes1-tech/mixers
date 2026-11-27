@@ -122,8 +122,8 @@ public static class WindowsThemeService
             int dark = 1;
             DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
 
-            int roundCorners = 2; // DWMWCP_ROUND
-            DwmSetWindowAttribute(hwnd, 33, ref roundCorners, sizeof(int));
+            int squareCorners = 1; // DWMWCP_DONOTROUND (cantos retos/quadrados)
+            DwmSetWindowAttribute(hwnd, 33, ref squareCorners, sizeof(int));
 
             // ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 (vidro fosco real do Windows 10/11!)
             var accent = new AccentPolicy
