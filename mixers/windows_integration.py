@@ -1,4 +1,4 @@
-"""Integrações nativas do Windows: vidro/cantos arredondados, posição e autostart."""
+"""Integrações nativas do Windows: vidro/cantos arredondados, posição DPI e autostart."""
 
 from __future__ import annotations
 
@@ -45,6 +45,19 @@ def get_work_area(screen_w: int, screen_h: int) -> tuple[int, int, int, int]:
         except Exception:
             pass
     return 0, 0, screen_w, screen_h - 48
+
+
+def compute_bottom_right_position(
+    win_w_px: int,
+    win_h_px: int,
+    work_area: tuple[int, int, int, int],
+    margin: int = 12,
+) -> tuple[int, int]:
+    """Calcula (x, y) exatos no canto inferior direito acima da barra de tarefas."""
+    left, top, right, bottom = work_area
+    x = max(left + margin, right - win_w_px - margin)
+    y = max(top + margin, bottom - win_h_px - margin)
+    return int(x), int(y)
 
 
 def _get_autostart_command() -> str:

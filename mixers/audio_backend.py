@@ -1,4 +1,4 @@
-"""Camada de controle de áudio (Windows Core Audio / WASAPI via pycaw)."""
+"""Camada de controle de áudio otimizada (Windows Core Audio / WASAPI via pycaw)."""
 
 from __future__ import annotations
 
@@ -65,8 +65,12 @@ class AudioBackend(ABC):
         """Retorna o nível de pico atual da saída principal (0.0 a 1.0)."""
 
     @abstractmethod
+    def get_peaks(self) -> tuple[float, Dict[str, float]]:
+        """Leitura ultrarrápida dos medidores (master_peak, {app_id: peak})."""
+
+    @abstractmethod
     def list_app_sessions(self) -> List[AppAudioSession]:
-        """Lista todos os aplicativos com sessão de áudio ativa."""
+        """Lista todos os aplicativos com sessão de áudio ativa e atualiza o cache."""
 
     @abstractmethod
     def set_app_volume(self, app_id: str, volume: float) -> None:
@@ -78,7 +82,7 @@ class AudioBackend(ABC):
 
 
 class WindowsAudioBackend(AudioBackend):
-    """Backend oficial para Windows usando WASAPI via pycaw."""
+    """Backend oficial otimizado para Windows usando WASAPI via pycaw com cache COM."""
 
     SYSTEM_SOUNDS_ID = "__system_sounds__"
 
@@ -106,17 +110,15 @@ class WindowsAudioBackend(AudioBackend):
         self._master = None
         self._master_meter = None
         self._device_name = "Saída Padrão"
+        # Cache: app_id -> lista de (SimpleAudioVolume, IAudioMeterInformation | None)
+        self._session_cache: Dict[str, list[tuple]] = {}
         self._init_master_endpoint()
 
     def _init_master_endpoint(self) -> None:
         devices = self._AudioUtilities.GetSpeakers()
 
-        # Nome amigável do dispositivo (quando disponível)
         friendly = getattr(devices, "FriendlyName", None)
-        if friendly:
-            self._device_name = str(friendly)
-        else:
-            self._device_name = "Dispositivo Padrão"
+        self._device_name = str(friendly) if friendly else "Dispositivo Padrão"
 
         if hasattr(devices, "EndpointVolume"):
             self._master = devices.EndpointVolume
@@ -178,12 +180,29 @@ class WindowsAudioBackend(AudioBackend):
         except Exception:
             return 0.0
 
-    def _get_session_peak(self, session) -> float:
+    def get_peaks(self) -> tuple[float, Dict[str, float]]:
+        """Lê apenas os ponteiros COM em cache — ultrarrápido, sem re-escanear processos."""
+        master_peak = self.get_master_peak()
+        app_peaks: Dict[str, float] = {}
+        for app_id, handles in self._session_cache.items():
+            best = 0.0
+            for _simple_vol, meter in handles:
+                if meter is None:
+                    continue
+                try:
+                    val = clamp_volume(meter.GetPeakValue())
+                    if val > best:
+                        best = val
+                except Exception:
+                    continue
+            app_peaks[app_id] = best
+        return master_peak, app_peaks
+
+    def _query_meter(self, session):
         try:
-            meter = session._ctl.QueryInterface(self._IAudioMeterInformation)
-            return clamp_volume(meter.GetPeakValue())
+            return session._ctl.QueryInterface(self._IAudioMeterInformation)
         except Exception:
-            return 0.0
+            return None
 
     def _get_session_app_id(self, session) -> tuple[str, str, int | None]:
         proc = session.Process
@@ -198,6 +217,8 @@ class WindowsAudioBackend(AudioBackend):
 
     def list_app_sessions(self) -> List[AppAudioSession]:
         grouped: Dict[str, AppAudioSession] = {}
+        new_cache: Dict[str, list[tuple]] = {}
+
         for session in self._AudioUtilities.GetAllSessions():
             simple_vol = getattr(session, "SimpleAudioVolume", None)
             if simple_vol is None:
@@ -210,7 +231,15 @@ class WindowsAudioBackend(AudioBackend):
             except Exception:
                 continue
 
-            peak = 0.0 if muted else self._get_session_peak(session)
+            meter = self._query_meter(session)
+            peak = 0.0
+            if not muted and meter is not None:
+                try:
+                    peak = clamp_volume(meter.GetPeakValue())
+                except Exception:
+                    peak = 0.0
+
+            new_cache.setdefault(app_id, []).append((simple_vol, meter))
 
             if app_id not in grouped:
                 grouped[app_id] = AppAudioSession(
@@ -224,8 +253,10 @@ class WindowsAudioBackend(AudioBackend):
             else:
                 if pid is not None and pid not in grouped[app_id].pids:
                     grouped[app_id].pids.append(pid)
-                grouped[app_id].peak_level = max(grouped[app_id].peak_level, peak)
+                if peak > grouped[app_id].peak_level:
+                    grouped[app_id].peak_level = peak
 
+        self._session_cache = new_cache
         return sorted(
             grouped.values(),
             key=lambda item: (item.app_id == self.SYSTEM_SOUNDS_ID, item.display_name.lower()),
@@ -233,12 +264,21 @@ class WindowsAudioBackend(AudioBackend):
 
     def set_app_volume(self, app_id: str, volume: float) -> None:
         level = clamp_volume(volume)
-        for session in self._AudioUtilities.GetAllSessions():
-            simple_vol = getattr(session, "SimpleAudioVolume", None)
-            if simple_vol is None:
-                continue
-            sid, _, _ = self._get_session_app_id(session)
-            if sid == app_id:
+        handles = self._session_cache.get(app_id)
+        if not handles:
+            self.list_app_sessions()
+            handles = self._session_cache.get(app_id, [])
+
+        stale = False
+        for simple_vol, _meter in handles:
+            try:
+                simple_vol.SetMasterVolume(level, None)
+            except Exception:
+                stale = True
+
+        if stale:
+            self.list_app_sessions()
+            for simple_vol, _meter in self._session_cache.get(app_id, []):
                 try:
                     simple_vol.SetMasterVolume(level, None)
                 except Exception:
@@ -246,12 +286,21 @@ class WindowsAudioBackend(AudioBackend):
 
     def set_app_mute(self, app_id: str, muted: bool) -> None:
         val = 1 if muted else 0
-        for session in self._AudioUtilities.GetAllSessions():
-            simple_vol = getattr(session, "SimpleAudioVolume", None)
-            if simple_vol is None:
-                continue
-            sid, _, _ = self._get_session_app_id(session)
-            if sid == app_id:
+        handles = self._session_cache.get(app_id)
+        if not handles:
+            self.list_app_sessions()
+            handles = self._session_cache.get(app_id, [])
+
+        stale = False
+        for simple_vol, _meter in handles:
+            try:
+                simple_vol.SetMute(val, None)
+            except Exception:
+                stale = True
+
+        if stale:
+            self.list_app_sessions()
+            for simple_vol, _meter in self._session_cache.get(app_id, []):
                 try:
                     simple_vol.SetMute(val, None)
                 except Exception:
@@ -292,24 +341,34 @@ class DemoAudioBackend(AudioBackend):
         wave = 0.45 + 0.35 * math.sin(time.monotonic() * 4.0)
         return clamp_volume(wave * self._master_volume)
 
-    def list_app_sessions(self) -> List[AppAudioSession]:
+    def get_peaks(self) -> tuple[float, Dict[str, float]]:
         t = time.monotonic()
-        result: List[AppAudioSession] = []
-        for idx, a in enumerate(self._apps.values()):
-            peak = 0.0
-            if not a.muted and not self._master_muted:
-                peak = clamp_volume((0.35 + 0.45 * abs(math.sin(t * (2.5 + idx)))) * a.volume)
-            result.append(
+        peaks: Dict[str, float] = {}
+        for idx, (app_id, a) in enumerate(self._apps.items()):
+            if a.muted or self._master_muted:
+                peaks[app_id] = 0.0
+            else:
+                peaks[app_id] = clamp_volume(
+                    (0.35 + 0.45 * abs(math.sin(t * (2.5 + idx)))) * a.volume
+                )
+        return self.get_master_peak(), peaks
+
+    def list_app_sessions(self) -> List[AppAudioSession]:
+        _, peaks = self.get_peaks()
+        return sorted(
+            [
                 AppAudioSession(
                     app_id=a.app_id,
                     display_name=a.display_name,
                     volume=a.volume,
                     muted=a.muted,
                     pids=list(a.pids),
-                    peak_level=peak,
+                    peak_level=peaks.get(a.app_id, 0.0),
                 )
-            )
-        return sorted(result, key=lambda item: item.display_name.lower())
+                for a in self._apps.values()
+            ],
+            key=lambda item: item.display_name.lower(),
+        )
 
     def set_app_volume(self, app_id: str, volume: float) -> None:
         if app_id in self._apps:

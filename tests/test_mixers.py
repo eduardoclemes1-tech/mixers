@@ -7,7 +7,7 @@ import unittest
 from mixers.audio_backend import DemoAudioBackend, clamp_volume, format_app_name
 from mixers.profiles import ProfileManager
 from mixers.updater import is_newer_version, parse_version, select_exe_asset_url
-from mixers.windows_integration import get_work_area
+from mixers.windows_integration import compute_bottom_right_position, get_work_area
 
 
 class TestAudioHelpers(unittest.TestCase):
@@ -42,6 +42,13 @@ class TestDemoBackendAndProfiles(unittest.TestCase):
         left, top, right, bottom = get_work_area(1920, 1080)
         self.assertGreater(right, left)
         self.assertGreater(bottom, top)
+
+        master_peak, app_peaks = backend.get_peaks()
+        self.assertEqual(master_peak, 0.0)
+        self.assertIn("chrome.exe", app_peaks)
+
+        x, y = compute_bottom_right_position(470, 660, (0, 0, 1920, 1032), margin=12)
+        self.assertEqual((x, y), (1438, 360))
 
     def test_profile_save_apply_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

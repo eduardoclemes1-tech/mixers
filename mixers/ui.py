@@ -1,9 +1,10 @@
-"""Interface clean, transparente e flutuante do Mixers (estilo painel do Windows 11)."""
+"""Interface clean, rápida, transparente e fixa no canto inferior direito (estilo Windows 11)."""
 
 from __future__ import annotations
 
 import sys
 import threading
+import time
 from typing import Dict
 
 import customtkinter as ctk
@@ -15,6 +16,7 @@ from mixers.tray import TrayController
 from mixers.updater import UpdateInfo, check_for_update, download_and_apply_update
 from mixers.windows_integration import (
     apply_windows_glass_style,
+    compute_bottom_right_position,
     get_work_area,
     is_autostart_enabled,
     set_autostart,
@@ -33,12 +35,13 @@ TEXT_SECONDARY = "#94A3B8"
 
 
 class MixersApp(ctk.CTk):
-    """Painel flutuante clean e transparente que roda em segundo plano na bandeja."""
+    """Painel flutuante estilo nativo do Windows no canto inferior direito."""
 
-    WINDOW_WIDTH = 390
-    WINDOW_HEIGHT = 560
-    SESSION_REFRESH_MS = 2000
-    METER_REFRESH_MS = 180
+    WINDOW_WIDTH = 376
+    WINDOW_HEIGHT = 530
+    SESSION_REFRESH_MS = 3000
+    METER_REFRESH_MS = 160
+    METER_EPSILON = 0.025
 
     def __init__(
         self,
@@ -61,13 +64,20 @@ class MixersApp(ctk.CTk):
         self.configure(fg_color=BG_SURFACE)
         self.resizable(False, False)
 
-        # Estado visual e interativo
-        self._alpha = 0.90
+        # Estado visual e otimização
+        self._alpha = 0.91
         self._pinned = False
         self._settings_open = False
         self._dialog_open = False
         self._is_visible = not start_minimized
-        self._drag_origin: tuple[int, int] | None = None
+
+        self._session_timer_id: str | None = None
+        self._meter_timer_id: str | None = None
+        self._last_slider_ts: float = 0.0
+        self._last_master_pct: int = -1
+        self._last_master_peak: float = -1.0
+        self._last_app_pct: Dict[str, int] = {}
+        self._last_app_peak: Dict[str, float] = {}
 
         self._app_rows: Dict[str, dict] = {}
         self._current_sessions: Dict[str, AppAudioSession] = {}
@@ -78,9 +88,13 @@ class MixersApp(ctk.CTk):
         self._pending_update: UpdateInfo | None = None
         self._updating = False
 
-        # Estilo flutuante transparente (Windows)
+        # Estilo flyout nativo do Windows (sem ícone extra na barra de tarefas)
         if sys.platform == "win32":
             self.overrideredirect(True)
+            try:
+                self.attributes("-toolwindow", True)
+            except Exception:
+                pass
         self.attributes("-topmost", True)
         try:
             self.attributes("-alpha", self._alpha)
@@ -91,7 +105,7 @@ class MixersApp(ctk.CTk):
         self._position_bottom_right()
         self._apply_native_window_effects()
 
-        # Eventos de foco e fechamento (minimiza para bandeja em vez de encerrar)
+        # Eventos de foco e fechamento (recolhe para a bandeja em vez de encerrar)
         self.bind("<Escape>", lambda _e: self.hide_to_tray())
         self.bind("<FocusOut>", self._on_focus_out)
         self.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
@@ -118,22 +132,25 @@ class MixersApp(ctk.CTk):
             self.withdraw()
         else:
             self.refresh_audio_state(force_rebuild=True)
+            self._start_live_loops()
 
-        self.after(self.SESSION_REFRESH_MS, self._schedule_session_refresh)
-        self.after(self.METER_REFRESH_MS, self._schedule_meter_refresh)
+        # Verifica atualização 3s após iniciar (em background, sem travar a abertura)
         self.after(3000, lambda: self.check_updates_async(manual=False))
 
     # ------------------------------------------------------------------
-    # Posicionamento e visual nativo
+    # Posicionamento fixo no canto inferior direito (padrão Windows + DPI)
     # ------------------------------------------------------------------
     def _position_bottom_right(self) -> None:
         self.update_idletasks()
-        left, top, right, bottom = get_work_area(
-            self.winfo_screenwidth(), self.winfo_screenheight()
-        )
-        margin = 14
-        x = max(left + margin, right - self.WINDOW_WIDTH - margin)
-        y = max(top + margin, bottom - self.WINDOW_HEIGHT - margin)
+        try:
+            scale = float(self._get_window_scaling())
+        except Exception:
+            scale = 1.0
+
+        win_w_px = int(round(self.WINDOW_WIDTH * scale))
+        win_h_px = int(round(self.WINDOW_HEIGHT * scale))
+        work_area = get_work_area(self.winfo_screenwidth(), self.winfo_screenheight())
+        x, y = compute_bottom_right_position(win_w_px, win_h_px, work_area, margin=12)
         self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{y}")
 
     def _apply_native_window_effects(self) -> None:
@@ -141,25 +158,14 @@ class MixersApp(ctk.CTk):
             return
         try:
             self.update_idletasks()
-            hwnd = self.winfo_id()
-            apply_windows_glass_style(hwnd)
+            apply_windows_glass_style(self.winfo_id())
         except Exception:
             pass
-
-    def _start_drag(self, event) -> None:
-        self._drag_origin = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
-
-    def _on_drag(self, event) -> None:
-        if self._drag_origin is None:
-            return
-        dx, dy = self._drag_origin
-        self.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
 
     # ------------------------------------------------------------------
     # Layout Clean & Transparente
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
-        # Container principal com borda sutil (efeito vidro)
         self.shell = ctk.CTkFrame(
             self,
             fg_color=BG_SURFACE,
@@ -171,27 +177,20 @@ class MixersApp(ctk.CTk):
         self.shell.grid_columnconfigure(0, weight=1)
         self.shell.grid_rowconfigure(5, weight=1)
 
-        # 1. Cabeçalho compacto (arrastável)
+        # 1. Cabeçalho compacto (fixo, estilo painel do Windows)
         header = ctk.CTkFrame(self.shell, fg_color="transparent")
         header.grid(row=0, column=0, padx=14, pady=(12, 6), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        header.bind("<Button-1>", self._start_drag)
-        header.bind("<B1-Motion>", self._on_drag)
 
         title_row = ctk.CTkFrame(header, fg_color="transparent")
         title_row.grid(row=0, column=0, sticky="w")
-        title_row.bind("<Button-1>", self._start_drag)
-        title_row.bind("<B1-Motion>", self._on_drag)
 
-        title_lbl = ctk.CTkLabel(
+        ctk.CTkLabel(
             title_row,
             text="Mixers",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=ctk.CTkFont(size=17, weight="bold"),
             text_color=TEXT_PRIMARY,
-        )
-        title_lbl.pack(anchor="w")
-        title_lbl.bind("<Button-1>", self._start_drag)
-        title_lbl.bind("<B1-Motion>", self._on_drag)
+        ).pack(anchor="w")
 
         self.device_lbl = ctk.CTkLabel(
             title_row,
@@ -207,8 +206,8 @@ class MixersApp(ctk.CTk):
         self.pin_btn = ctk.CTkButton(
             btn_group,
             text="Fixar",
-            width=48,
-            height=26,
+            width=46,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_SURFACE,
@@ -221,8 +220,8 @@ class MixersApp(ctk.CTk):
         self.settings_btn = ctk.CTkButton(
             btn_group,
             text="Ajustes",
-            width=56,
-            height=26,
+            width=54,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_SURFACE,
@@ -235,8 +234,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             btn_group,
             text="—",
-            width=28,
-            height=26,
+            width=26,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color=CARD_SURFACE,
@@ -245,7 +244,7 @@ class MixersApp(ctk.CTk):
             command=self.hide_to_tray,
         ).pack(side="left")
 
-        # 2. Gaveta retrátil de Ajustes (Transparência, Autostart e Perfis)
+        # 2. Gaveta retrátil de Ajustes (Transparência, Autostart, Perfis e Updates)
         self.settings_drawer = ctk.CTkFrame(
             self.shell,
             fg_color=CARD_SURFACE,
@@ -278,7 +277,7 @@ class MixersApp(ctk.CTk):
         self.alpha_lbl = ctk.CTkLabel(
             self.settings_drawer,
             text=f"{int(self._alpha * 100)}%",
-            width=38,
+            width=36,
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=TEXT_PRIMARY,
         )
@@ -296,16 +295,15 @@ class MixersApp(ctk.CTk):
             row=1, column=0, columnspan=3, padx=12, pady=(4, 6), sticky="w"
         )
 
-        # Perfis dentro da gaveta para manter a tela principal bem limpa
         prof_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        prof_row.grid(row=2, column=0, columnspan=3, padx=10, pady=(2, 10), sticky="ew")
+        prof_row.grid(row=2, column=0, columnspan=3, padx=10, pady=(2, 8), sticky="ew")
 
         self.profile_menu = ctk.CTkOptionMenu(
             prof_row,
             variable=self._selected_profile,
             values=self._get_profile_options(),
-            width=145,
-            height=26,
+            width=140,
+            height=25,
             font=ctk.CTkFont(size=11),
             fg_color=BG_SURFACE,
             button_color=CARD_BORDER,
@@ -316,8 +314,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             prof_row,
             text="Aplicar",
-            width=54,
-            height=26,
+            width=52,
+            height=25,
             font=ctk.CTkFont(size=11),
             fg_color=ACCENT,
             hover_color=ACCENT_HOVER,
@@ -328,8 +326,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             prof_row,
             text="Salvar",
-            width=52,
-            height=26,
+            width=50,
+            height=25,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_BORDER,
             hover_color="#334155",
@@ -339,8 +337,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             prof_row,
             text="X",
-            width=28,
-            height=26,
+            width=26,
+            height=25,
             font=ctk.CTkFont(size=11, weight="bold"),
             fg_color=CARD_BORDER,
             hover_color=MUTED_BG,
@@ -352,7 +350,7 @@ class MixersApp(ctk.CTk):
 
         ctk.CTkLabel(
             upd_row,
-            text=f"Versão atual: v{__version__}",
+            text=f"Versão v{__version__}",
             font=ctk.CTkFont(size=11),
             text_color=TEXT_SECONDARY,
         ).pack(side="left", padx=(2, 0))
@@ -360,7 +358,7 @@ class MixersApp(ctk.CTk):
         self.check_update_btn = ctk.CTkButton(
             upd_row,
             text="Verificar atualização",
-            width=136,
+            width=134,
             height=24,
             corner_radius=7,
             font=ctk.CTkFont(size=11),
@@ -403,7 +401,7 @@ class MixersApp(ctk.CTk):
         )
         self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=7)
 
-        # 3. Card Master Volume (clean + medidor em tempo real)
+        # 3. Card Master Volume
         master_card = ctk.CTkFrame(
             self.shell,
             fg_color=CARD_SURFACE,
@@ -432,8 +430,8 @@ class MixersApp(ctk.CTk):
         self.master_mute_btn = ctk.CTkButton(
             master_card,
             text="Som",
-            width=54,
-            height=26,
+            width=52,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11, weight="bold"),
             command=self._toggle_master_mute,
@@ -463,15 +461,15 @@ class MixersApp(ctk.CTk):
         self.master_meter.set(0)
         self.master_meter.grid(row=2, column=0, columnspan=3, padx=12, pady=(0, 10), sticky="ew")
 
-        # 4. Barra compacta de ações rápidas + filtro
+        # 4. Barra compacta de ações rápidas + busca
         quick_row = ctk.CTkFrame(self.shell, fg_color="transparent")
         quick_row.grid(row=4, column=0, padx=14, pady=(2, 4), sticky="ew")
 
         ctk.CTkButton(
             quick_row,
             text="100%",
-            width=48,
-            height=26,
+            width=46,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_SURFACE,
@@ -482,8 +480,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             quick_row,
             text="Foco 30%",
-            width=68,
-            height=26,
+            width=66,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_SURFACE,
@@ -494,8 +492,8 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             quick_row,
             text="Mutar",
-            width=54,
-            height=26,
+            width=52,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=MUTED_BG,
@@ -507,7 +505,7 @@ class MixersApp(ctk.CTk):
             quick_row,
             placeholder_text="Buscar app...",
             textvariable=self._search_var,
-            height=26,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=11),
             fg_color=CARD_SURFACE,
@@ -515,7 +513,7 @@ class MixersApp(ctk.CTk):
         )
         self.search_entry.pack(side="right", fill="x", expand=True)
 
-        # 5. Lista limpa e rolável de aplicativos
+        # 5. Lista rolável de aplicativos
         self.apps_scroll = ctk.CTkScrollableFrame(
             self.shell,
             fg_color="transparent",
@@ -532,7 +530,7 @@ class MixersApp(ctk.CTk):
 
         self.status_lbl = ctk.CTkLabel(
             footer,
-            text="Rodando em segundo plano",
+            text="Pronto • segundo plano ativo",
             anchor="w",
             font=ctk.CTkFont(size=11),
             text_color=TEXT_SECONDARY,
@@ -542,7 +540,7 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             footer,
             text="Sair",
-            width=44,
+            width=42,
             height=22,
             corner_radius=6,
             font=ctk.CTkFont(size=10),
@@ -551,6 +549,33 @@ class MixersApp(ctk.CTk):
             text_color=TEXT_SECONDARY,
             command=self.quit_app,
         ).grid(row=0, column=1, sticky="e")
+
+    # ------------------------------------------------------------------
+    # Controle de Timers (0% CPU quando oculto na bandeja!)
+    # ------------------------------------------------------------------
+    def _start_live_loops(self) -> None:
+        self._stop_live_loops()
+        self._session_timer_id = self.after(
+            self.SESSION_REFRESH_MS, self._schedule_session_refresh
+        )
+        self._meter_timer_id = self.after(
+            self.METER_REFRESH_MS, self._schedule_meter_refresh
+        )
+
+    def _stop_live_loops(self) -> None:
+        if self._session_timer_id is not None:
+            try:
+                self.after_cancel(self._session_timer_id)
+            except Exception:
+                pass
+            self._session_timer_id = None
+
+        if self._meter_timer_id is not None:
+            try:
+                self.after_cancel(self._meter_timer_id)
+            except Exception:
+                pass
+            self._meter_timer_id = None
 
     # ------------------------------------------------------------------
     # Visibilidade e Bandeja (Segundo Plano)
@@ -567,59 +592,78 @@ class MixersApp(ctk.CTk):
         self.deiconify()
         self.lift()
         self.focus_force()
-        self.refresh_audio_state(force_rebuild=True)
+        # Atualiza sem destruir os cards existentes (abertura instantânea!)
+        self.refresh_audio_state(force_rebuild=False)
+        self._start_live_loops()
 
     def hide_to_tray(self) -> None:
         if self.tray is None and not self.demo_mode:
             self.quit_app()
             return
         self._is_visible = False
+        self._stop_live_loops()
         self.withdraw()
 
     def _on_focus_out(self, _event) -> None:
         if self._pinned or self._dialog_open or not self._is_visible:
             return
-        # Pequeno atraso para evitar esconder ao clicar em widgets internos
         self.after(120, self._hide_if_still_unfocused)
 
     def _hide_if_still_unfocused(self) -> None:
         if self._pinned or self._dialog_open or not self._is_visible:
             return
         try:
-            focused = self.focus_displayof()
-            if focused is None:
+            if self.focus_displayof() is None:
                 self.hide_to_tray()
         except Exception:
             pass
 
     def quit_app(self) -> None:
+        self._stop_live_loops()
         if self.tray is not None:
             self.tray.stop()
         self.destroy()
 
     # ------------------------------------------------------------------
-    # Atualização em tempo real (somente quando visível)
+    # Atualização ultrarrápida (cache COM + delta threshold)
     # ------------------------------------------------------------------
     def _schedule_session_refresh(self) -> None:
-        if self._is_visible:
+        self._session_timer_id = None
+        if not self._is_visible:
+            return
+        # Evita interferir enquanto o usuário está arrastando um slider
+        if time.monotonic() - self._last_slider_ts > 0.6:
             self.refresh_audio_state(force_rebuild=False)
-        self.after(self.SESSION_REFRESH_MS, self._schedule_session_refresh)
+        self._session_timer_id = self.after(
+            self.SESSION_REFRESH_MS, self._schedule_session_refresh
+        )
 
     def _schedule_meter_refresh(self) -> None:
-        if self._is_visible:
-            self._update_audio_meters()
-        self.after(self.METER_REFRESH_MS, self._schedule_meter_refresh)
+        self._meter_timer_id = None
+        if not self._is_visible:
+            return
+        self._update_audio_meters()
+        self._meter_timer_id = self.after(
+            self.METER_REFRESH_MS, self._schedule_meter_refresh
+        )
 
     def _update_audio_meters(self) -> None:
         try:
-            self.master_meter.set(self.backend.get_master_peak())
-            sessions = self.backend.list_app_sessions()
-            for session in sessions:
-                row = self._app_rows.get(session.app_id)
-                if row:
-                    row["meter"].set(0.0 if session.muted else session.peak_level)
+            master_peak, app_peaks = self.backend.get_peaks()
         except Exception:
-            pass
+            return
+
+        if abs(master_peak - self._last_master_peak) >= self.METER_EPSILON:
+            self._last_master_peak = master_peak
+            self.master_meter.set(master_peak)
+
+        for app_id, row in self._app_rows.items():
+            session = self._current_sessions.get(app_id)
+            peak = 0.0 if (session and session.muted) else app_peaks.get(app_id, 0.0)
+            prev = self._last_app_peak.get(app_id, -1.0)
+            if abs(peak - prev) >= self.METER_EPSILON:
+                self._last_app_peak[app_id] = peak
+                row["meter"].set(peak)
 
     def refresh_audio_state(self, force_rebuild: bool = False) -> None:
         try:
@@ -632,8 +676,10 @@ class MixersApp(ctk.CTk):
             return
 
         self.device_lbl.configure(text=self._truncate(dev_name, 32))
-        self.master_slider.set(master_vol)
-        self.master_pct_lbl.configure(text=f"{master_vol}%")
+        if master_vol != self._last_master_pct:
+            self._last_master_pct = master_vol
+            self.master_slider.set(master_vol)
+            self.master_pct_lbl.configure(text=f"{master_vol}%")
         self._style_mute_button(self.master_mute_btn, master_muted)
 
         new_map = {s.app_id: s for s in sessions}
@@ -654,6 +700,8 @@ class MixersApp(ctk.CTk):
         for child in self.apps_scroll.winfo_children():
             child.destroy()
         self._app_rows.clear()
+        self._last_app_pct.clear()
+        self._last_app_peak.clear()
 
         query = self._search_var.get().strip().lower()
         filtered = [
@@ -689,6 +737,7 @@ class MixersApp(ctk.CTk):
             card.grid_columnconfigure(1, weight=1)
 
             vol_pct = int(round(session.volume * 100))
+            self._last_app_pct[session.app_id] = vol_pct
 
             ctk.CTkLabel(
                 card,
@@ -709,7 +758,7 @@ class MixersApp(ctk.CTk):
             mute_btn = ctk.CTkButton(
                 card,
                 text="Mudo" if session.muted else "Som",
-                width=52,
+                width=50,
                 height=24,
                 corner_radius=7,
                 font=ctk.CTkFont(size=11, weight="bold"),
@@ -739,7 +788,9 @@ class MixersApp(ctk.CTk):
                 fg_color="#0F172A",
                 progress_color=ACCENT,
             )
-            meter.set(0.0 if session.muted else session.peak_level)
+            init_peak = 0.0 if session.muted else session.peak_level
+            meter.set(init_peak)
+            self._last_app_peak[session.app_id] = init_peak
             meter.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="ew")
 
             self._app_rows[session.app_id] = {
@@ -755,18 +806,24 @@ class MixersApp(ctk.CTk):
             if not session:
                 continue
             vol_pct = int(round(session.volume * 100))
-            widgets["slider"].set(vol_pct)
+            if vol_pct != self._last_app_pct.get(app_id):
+                self._last_app_pct[app_id] = vol_pct
+                widgets["slider"].set(vol_pct)
+                widgets["pct_lbl"].configure(text=f"{vol_pct}%")
             widgets["pct_lbl"].configure(
-                text=f"{vol_pct}%",
-                text_color=TEXT_SECONDARY if session.muted else ACCENT,
+                text_color=TEXT_SECONDARY if session.muted else ACCENT
             )
             self._style_mute_button(widgets["mute_btn"], session.muted)
 
     # ------------------------------------------------------------------
-    # Eventos de áudio e ajustes
+    # Eventos de áudio (instantâneos e sem chamadas duplicadas)
     # ------------------------------------------------------------------
     def _on_master_slider(self, value: float) -> None:
         pct = int(round(value))
+        self._last_slider_ts = time.monotonic()
+        if pct == self._last_master_pct:
+            return
+        self._last_master_pct = pct
         self.master_pct_lbl.configure(text=f"{pct}%")
         self.backend.set_master_volume(pct / 100.0)
 
@@ -777,6 +834,10 @@ class MixersApp(ctk.CTk):
 
     def _on_app_slider(self, app_id: str, value: float) -> None:
         pct = int(round(value))
+        self._last_slider_ts = time.monotonic()
+        if pct == self._last_app_pct.get(app_id):
+            return
+        self._last_app_pct[app_id] = pct
         if app_id in self._app_rows:
             self._app_rows[app_id]["pct_lbl"].configure(text=f"{pct}%")
         self.backend.set_app_volume(app_id, pct / 100.0)
