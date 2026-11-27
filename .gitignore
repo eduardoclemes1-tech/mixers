@@ -8,6 +8,9 @@ env/
 build/
 dist/
 *.spec
+bin/
+obj/
+.vs/
 .pytest_cache/
 .DS_Store
 Thumbs.db

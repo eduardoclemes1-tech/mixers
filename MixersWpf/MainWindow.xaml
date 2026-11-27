@@ -1,0 +1,318 @@
+<Window x:Class="Mixers.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:controls="clr-namespace:Mixers.Controls"
+        Title="Mixers"
+        Width="356"
+        Height="380"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        RenderOptions.BitmapScalingMode="HighQuality">
+
+    <Border x:Name="RootBorder"
+            CornerRadius="12"
+            BorderThickness="1"
+            ClipToBounds="True">
+        <Border.RenderTransform>
+            <TranslateTransform x:Name="RootTranslate" Y="0"/>
+        </Border.RenderTransform>
+
+        <Grid>
+            <!-- ==================== VIEW 1: MIXER PRINCIPAL ==================== -->
+            <Grid x:Name="MixerView" Visibility="Visible">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Faixa Master (tingida com a cor do Windows) -->
+                <Border x:Name="MasterBand" Grid.Row="0" Padding="14,10,12,12">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="38"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock x:Name="DeviceNameText"
+                                   Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                   Text="Alto-falantes"
+                                   Foreground="#F4F4F8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="12.5"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"
+                                   Margin="2,0,8,6"/>
+
+                        <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,-2,-2,4">
+                            <Button x:Name="SettingsBtn"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Width="24" Height="24"
+                                    ToolTip="Ajustes"
+                                    Click="SettingsBtn_Click">
+                                <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#D4D0E6"/>
+                            </Button>
+                            <Button Style="{StaticResource IconButtonStyle}"
+                                    Width="24" Height="24"
+                                    ToolTip="Ocultar"
+                                    Click="HideBtn_Click">
+                                <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#D4D0E6"/>
+                            </Button>
+                        </StackPanel>
+
+                        <Button x:Name="MasterMuteBtn"
+                                Grid.Row="1" Grid.Column="0"
+                                Style="{StaticResource IconButtonStyle}"
+                                Width="34" Height="34"
+                                Margin="-4,0,6,0"
+                                Click="MasterMuteBtn_Click">
+                            <TextBlock x:Name="MasterMuteGlyph"
+                                       Text="&#xE767;"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       FontSize="18"
+                                       Foreground="#F4F4F8"/>
+                        </Button>
+
+                        <controls:VolumeSliderControl x:Name="MasterSlider"
+                                                      Grid.Row="1" Grid.Column="1"
+                                                      VerticalAlignment="Center"
+                                                      Margin="2,0,4,0"/>
+
+                        <TextBlock x:Name="MasterPercentText"
+                                   Grid.Row="1" Grid.Column="2"
+                                   Text="100"
+                                   Foreground="#F4F4F8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="17"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+
+                <!-- Banner discreto de atualização -->
+                <Border x:Name="UpdateBanner"
+                        Grid.Row="1"
+                        Visibility="Collapsed"
+                        Background="#CC1E1A33"
+                        Padding="14,6,12,6">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="UpdateBannerText"
+                                   Text="Nova versão disponível!"
+                                   Foreground="#F4F4F8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="11.5"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+                        <Button x:Name="UpdateNowBtn"
+                                Grid.Column="1"
+                                Content="Atualizar"
+                                Style="{StaticResource PillButtonStyle}"
+                                Background="{DynamicResource AccentBrush}"
+                                FontWeight="SemiBold"
+                                Click="UpdateNowBtn_Click"/>
+                    </Grid>
+                </Border>
+
+                <!-- Lista limpa de Aplicativos (scroll invisível com roda do mouse) -->
+                <Border x:Name="AppsListBand" Grid.Row="2">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Padding="0,4,0,4">
+                        <StackPanel x:Name="AppsPanel"/>
+                    </ScrollViewer>
+                </Border>
+
+                <!-- Faixa de Microfones (2º bloco no padrão da referência) -->
+                <Border x:Name="MicsHeaderBand" Grid.Row="3" Padding="14,7,12,7" Cursor="Hand" MouseLeftButtonDown="MicsHeader_Click">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock Text="Microfones"
+                                   Foreground="#F4F4F8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="12.5"
+                                   VerticalAlignment="Center"
+                                   Margin="2,0,0,0"/>
+
+                        <Button x:Name="MicTestBtn"
+                                Grid.Column="1"
+                                Content="Testar"
+                                Style="{StaticResource PillButtonStyle}"
+                                Margin="0,0,6,0"
+                                Padding="8,2"
+                                FontSize="10.5"
+                                Click="MicTestBtn_Click"/>
+
+                        <TextBlock x:Name="MicsChevron"
+                                   Grid.Column="2"
+                                   Text="&#xE70D;"
+                                   FontFamily="Segoe MDL2 Assets"
+                                   FontSize="11"
+                                   Foreground="#D4D0E6"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="MicsListBand" Grid.Row="4" Padding="0,3,0,6">
+                    <StackPanel x:Name="MicsPanel"/>
+                </Border>
+            </Grid>
+
+            <!-- ==================== VIEW 2: AJUSTES (troca limpa GPU, zero pixelação) ==================== -->
+            <Grid x:Name="SettingsView" Visibility="Collapsed">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <Border x:Name="SettingsHeaderBand" Grid.Row="0" Padding="10,9,14,9">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Button Style="{StaticResource IconButtonStyle}"
+                                Width="28" Height="26"
+                                Margin="0,0,6,0"
+                                Click="BackToMixerBtn_Click">
+                            <TextBlock Text="&#xE72B;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#F4F4F8"/>
+                        </Button>
+
+                        <TextBlock Grid.Column="1"
+                                   Text="Ajustes"
+                                   Foreground="#F4F4F8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="13.5"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"/>
+
+                        <TextBlock x:Name="VersionBadgeText"
+                                   Grid.Column="2"
+                                   Text="v1.0.0"
+                                   Foreground="#C8C4D8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="11"
+                                   VerticalAlignment="Center"/>
+                    </Grid>
+                </Border>
+
+                <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,12,16,10">
+                    <StackPanel>
+                        <!-- Opacidade -->
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="38"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Opacidade" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <controls:VolumeSliderControl x:Name="OpacitySlider" Grid.Column="1" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="OpacityPercentText" Grid.Column="2" Text="90%" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="11.5" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                        </Grid>
+
+                        <!-- Toggles -->
+                        <CheckBox x:Name="AnimationsCheck"
+                                  Style="{StaticResource ModernCheckBoxStyle}"
+                                  Content="Animações suaves ao abrir/fechar"
+                                  Margin="0,0,0,10"
+                                  Click="AnimationsCheck_Click"/>
+
+                        <CheckBox x:Name="AutostartCheck"
+                                  Style="{StaticResource ModernCheckBoxStyle}"
+                                  Content="Iniciar com o Windows"
+                                  Margin="0,0,0,10"
+                                  Click="AutostartCheck_Click"/>
+
+                        <CheckBox x:Name="PinCheck"
+                                  Style="{StaticResource ModernCheckBoxStyle}"
+                                  Content="Fixar painel na tela"
+                                  Margin="0,0,0,12"
+                                  Click="PinCheck_Click"/>
+
+                        <!-- Atalho Global -->
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="Atalho:" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <Border Grid.Column="1" Background="#1EFFFFFF" CornerRadius="6" Padding="8,3" HorizontalAlignment="Left">
+                                <TextBlock x:Name="HotkeyBadgeText" Text="Ctrl+Alt+M" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="11" FontWeight="SemiBold"/>
+                            </Border>
+                            <Button Grid.Column="2" Content="Limpar" Style="{StaticResource PillButtonStyle}" Background="Transparent" Foreground="#A8A4B8" Margin="4,0,4,0" Click="ClearHotkeyBtn_Click"/>
+                            <Button x:Name="RecordHotkeyBtn" Grid.Column="3" Content="Gravar" Style="{StaticResource PillButtonStyle}" FontWeight="SemiBold" Click="RecordHotkeyBtn_Click"/>
+                        </Grid>
+
+                        <!-- Ações rápidas -->
+                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                            <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Margin="0,0,6,0" Click="PresetFullBtn_Click"/>
+                            <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Margin="0,0,6,0" Click="PresetFocusBtn_Click"/>
+                            <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Background="#887F1D2D" Click="PresetMuteBtn_Click"/>
+                        </StackPanel>
+
+                        <!-- Perfis -->
+                        <Grid Margin="0,0,0,4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="ProfilesCombo" Height="26" Margin="0,0,6,0" FontSize="11"/>
+                            <Button Grid.Column="1" Content="Aplicar" Style="{StaticResource PillButtonStyle}" Background="{DynamicResource AccentBrush}" Margin="0,0,4,0" Click="ApplyProfileBtn_Click"/>
+                            <Button Grid.Column="2" Content="Salvar" Style="{StaticResource PillButtonStyle}" Margin="0,0,4,0" Click="SaveProfileBtn_Click"/>
+                            <Button Grid.Column="3" Content="X" Style="{StaticResource PillButtonStyle}" Background="#667F1D2D" Padding="8,4" Click="DeleteProfileBtn_Click"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- Rodapé Ajustes -->
+                <Border x:Name="SettingsFooterBand" Grid.Row="2" Padding="14,8,12,8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StatusText"
+                                   Text="Mixers v1.0.0"
+                                   Foreground="#A8A4B8"
+                                   FontFamily="Segoe UI"
+                                   FontSize="10.5"
+                                   TextTrimming="CharacterEllipsis"
+                                   VerticalAlignment="Center"
+                                   Margin="0,0,8,0"/>
+                        <Button Grid.Column="1" Content="Atualizações" Style="{StaticResource PillButtonStyle}" Margin="0,0,6,0" Click="CheckUpdatesBtn_Click"/>
+                        <Button Grid.Column="2" Content="Sair" Style="{StaticResource PillButtonStyle}" Background="Transparent" Foreground="#A8A4B8" Click="QuitBtn_Click"/>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>
