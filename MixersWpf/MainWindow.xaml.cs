@@ -97,11 +97,14 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        _theme = WindowsThemeService.BuildPalette(WindowsThemeService.GetWindowsAccentColor());
+        _theme = WindowsThemeService.BuildPalette(
+            WindowsThemeService.GetWindowsAccentColor(),
+            _settings.Settings.TransparentGlass);
         ApplyTheme();
 
         VersionBadgeText.Text = $"v{App.AppVersion}";
         StatusText.Text = $"Mixers v{App.AppVersion}";
+        TransparentGlassCheck.IsChecked = _settings.Settings.TransparentGlass;
         AnimationsCheck.IsChecked = _settings.Settings.Animations;
         MediaControlsCheck.IsChecked = _settings.Settings.ShowMediaControls;
         RememberVolCheck.IsChecked = _settings.Settings.RememberAppVolumes;
@@ -167,7 +170,7 @@ public partial class MainWindow : Window
         SystemEvents.DisplaySettingsChanged += OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged += OnSystemUserPreferenceChanged;
 
-        SourceInitialized += (_, _) => WindowsThemeService.EnableAcrylicBlur(this);
+        SourceInitialized += (_, _) => WindowsThemeService.SetAcrylicBlur(this, _settings.Settings.TransparentGlass);
         Deactivated += (_, _) => OnWindowDeactivated();
         PreviewKeyDown += OnWindowKeyDown;
 
@@ -233,7 +236,9 @@ public partial class MainWindow : Window
         {
             Dispatcher.BeginInvoke(() =>
             {
-                _theme = WindowsThemeService.BuildPalette(WindowsThemeService.GetWindowsAccentColor());
+                _theme = WindowsThemeService.BuildPalette(
+                    WindowsThemeService.GetWindowsAccentColor(),
+                    _settings.Settings.TransparentGlass);
                 ApplyTheme();
             });
         }
@@ -1066,6 +1071,25 @@ public partial class MainWindow : Window
         BeginAnimation(OpacityProperty, null);
         Opacity = _settings.Settings.Alpha;
         ScheduleSaveSettings();
+    }
+
+    private void TransparentGlassCheck_Click(object sender, RoutedEventArgs e)
+    {
+        bool glass = TransparentGlassCheck.IsChecked == true;
+        _settings.Settings.TransparentGlass = glass;
+        if (!glass && _settings.Settings.Alpha < 0.96)
+        {
+            _settings.Settings.Alpha = 0.98;
+            OpacitySlider.Value = 98;
+            OpacityPercentText.Text = "98%";
+            BeginAnimation(OpacityProperty, null);
+            Opacity = 0.98;
+        }
+        _theme = WindowsThemeService.BuildPalette(WindowsThemeService.GetWindowsAccentColor(), glass);
+        ApplyTheme();
+        WindowsThemeService.SetAcrylicBlur(this, glass);
+        _settings.SaveSettings();
+        StatusText.Text = glass ? "Vidro transparente ativado." : "Fundo mais opaco e visível.";
     }
 
     private void AnimationsCheck_Click(object sender, RoutedEventArgs e)

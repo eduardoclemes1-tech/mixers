@@ -87,31 +87,34 @@ public static class WindowsThemeService
         return Color.FromRgb(r, g, bl);
     }
 
-    public static FluentThemePalette BuildPalette(Color systemAccent)
+    public static FluentThemePalette BuildPalette(Color systemAccent, bool transparentGlass = true)
     {
         double lum = 0.299 * systemAccent.R + 0.587 * systemAccent.G + 0.114 * systemAccent.B;
         Color accent = lum < 95 ? Mix(systemAccent, Colors.White, 0.28) : systemAccent;
         Color accentHover = Mix(accent, Colors.White, 0.22);
 
-        // Cores com transparência real para combinar com o vidro Acrylic do Windows 11!
         Color headerBase = Mix(Color.FromRgb(22, 20, 32), accent, 0.30);
         Color listBase = Mix(Color.FromRgb(16, 15, 22), accent, 0.08);
         Color borderBase = Mix(Color.FromRgb(75, 72, 94), accent, 0.32);
+
+        byte headerAlpha = transparentGlass ? (byte)204 : (byte)252;
+        byte listAlpha = transparentGlass ? (byte)216 : (byte)253;
+        byte borderAlpha = transparentGlass ? (byte)165 : (byte)230;
 
         return new FluentThemePalette
         {
             Accent = accent,
             AccentHover = accentHover,
-            HeaderBand = Color.FromArgb(206, headerBase.R, headerBase.G, headerBase.B),
-            ListBand = Color.FromArgb(218, listBase.R, listBase.G, listBase.B),
-            PanelBorder = Color.FromArgb(165, borderBase.R, borderBase.G, borderBase.B),
+            HeaderBand = Color.FromArgb(headerAlpha, headerBase.R, headerBase.G, headerBase.B),
+            ListBand = Color.FromArgb(listAlpha, listBase.R, listBase.G, listBase.B),
+            PanelBorder = Color.FromArgb(borderAlpha, borderBase.R, borderBase.G, borderBase.B),
             TrackUnfilled = Color.FromArgb(135, 165, 160, 190),
             TrackMuted = Color.FromArgb(90, 130, 126, 150),
             ThumbMuted = Color.FromRgb(115, 110, 138),
         };
     }
 
-    public static void EnableAcrylicBlur(Window window)
+    public static void SetAcrylicBlur(Window window, bool enabled)
     {
         try
         {
@@ -125,12 +128,12 @@ public static class WindowsThemeService
             int squareCorners = 1; // DWMWCP_DONOTROUND (cantos retos/quadrados)
             DwmSetWindowAttribute(hwnd, 33, ref squareCorners, sizeof(int));
 
-            // ACCENT_ENABLE_ACRYLICBLURBEHIND = 4 (vidro fosco real do Windows 10/11!)
+            // ACCENT_ENABLE_ACRYLICBLURBEHIND = 4, ACCENT_DISABLED = 0
             var accent = new AccentPolicy
             {
-                AccentState = 4,
+                AccentState = enabled ? 4 : 0,
                 AccentFlags = 2,
-                GradientColor = 0x01101018 // tint mínimo (o próprio XAML controla o tom 2-faixas)
+                GradientColor = enabled ? 0x01101018u : 0x00000000u
             };
             int size = Marshal.SizeOf(accent);
             IntPtr ptr = Marshal.AllocHGlobal(size);

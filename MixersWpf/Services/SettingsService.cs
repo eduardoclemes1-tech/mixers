@@ -7,7 +7,8 @@ namespace Mixers.Services;
 
 public class UserSettings
 {
-    public double Alpha { get; set; } = 0.90;
+    public double Alpha { get; set; } = 0.94;
+    public bool TransparentGlass { get; set; } = true;
     public bool Animations { get; set; } = true;
     public string Hotkey { get; set; } = "Ctrl+Alt+M";
     public string MicMuteHotkey { get; set; } = "";

@@ -296,6 +296,7 @@
                             </Grid>
 
                             <!-- Switches -->
+                            <CheckBox x:Name="TransparentGlassCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Fundo transparente (vidro Acrylic)" Margin="0,0,0,9" Click="TransparentGlassCheck_Click"/>
                             <CheckBox x:Name="AnimationsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Animações suaves" Margin="0,0,0,9" Click="AnimationsCheck_Click"/>
                             <CheckBox x:Name="MediaControlsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mini controle de mídia (⏮ ⏯ ⏭)" Margin="0,0,0,9" Click="MediaControlsCheck_Click"/>
                             <CheckBox x:Name="RememberVolCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Lembrar volume por aplicativo" Margin="0,0,0,9" Click="RememberVolCheck_Click"/>
