@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -17,9 +16,10 @@ public sealed class OpenAppInfo
 public readonly record struct ProcessSnapEntry(uint Pid, uint ParentPid, string ExeName);
 
 /// <summary>
-/// Descobre aplicativos abertos no Windows (janelas da barra de tarefas, apps UWP
-/// e apps residentes na bandeja como Discord, WhatsApp, Spotify e Steam) e resolve
-/// a cadeia de processo-pai para processos hospedados (ex: msedgewebview2 -> WhatsApp).
+/// Descobre exclusivamente aplicativos com janela realmente aberta na área de trabalho /
+/// barra de tarefas (sincronizado com o Alt+Tab/Taskbar do Windows, incluindo UWP),
+/// evitando processos fechados em segundo plano/daemons, e resolve processo-pai para
+/// sessões hospedadas (ex: msedgewebview2 -> WhatsApp, steamwebhelper -> Steam).
 /// </summary>
 public static class OpenAppsService
 {
@@ -32,6 +32,15 @@ public static class OpenAppsService
     private const int DwmwaCloaked = 14;
 
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Rect
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct ProcessEntry32
@@ -75,6 +84,12 @@ public static class OpenAppsService
 
     [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
 
     [DllImport("user32.dll")]
     private static extern int GetWindowTextLength(IntPtr hWnd);
@@ -121,7 +136,7 @@ public static class OpenAppsService
         "backgroundtaskhost"
     };
 
-    // Janelas internas do shell do Windows que não devem aparecer na lista de apps abertos
+    // Processos internos do shell do Windows (ignorados tanto em sessões silenciosas quanto em janelas)
     private static readonly HashSet<string> IgnoredShellApps = new(StringComparer.OrdinalIgnoreCase)
     {
         "mixers",
@@ -146,50 +161,28 @@ public static class OpenAppsService
         "msedgewebview2"
     };
 
-    // Apps comuns de áudio/comunicação/jogos que costumam ficar minimizados na bandeja (sem janela visível)
-    private static readonly HashSet<string> TrayResidentAudioApps = new(StringComparer.OrdinalIgnoreCase)
+    // Utilitários sem áudio (ignorados na descoberta de janelas silenciosas, mas exibidos se tocarem som via WASAPI)
+    private static readonly HashSet<string> NonAudioUtilityWindows = new(StringComparer.OrdinalIgnoreCase)
     {
-        "discord",
-        "discordptb",
-        "discordcanary",
-        "whatsapp",
-        "telegram",
-        "spotify",
-        "steam",
-        "teams",
-        "ms-teams",
-        "zoom",
-        "skype",
-        "slack",
-        "webex",
-        "obs64",
-        "obs32",
-        "vlc",
-        "applemusic",
-        "itunes",
-        "tidal",
-        "deezer",
-        "musicbee",
-        "foobar2000",
-        "chrome",
-        "firefox",
-        "msedge",
-        "opera",
-        "brave",
-        "vivaldi",
-        "zen",
-        "epicgameslauncher",
+        "snippingtool",
+        "screensketch",
         "riotclientservices",
-        "leagueclient",
-        "leagueclientux",
-        "battle.net",
-        "eadesktop",
-        "upc",
-        "goggalaxy",
-        "xboxpcapp",
-        "parsec",
-        "medal",
-        "overwolf"
+        "riotclientcrashhandler",
+        "calculatorapp",
+        "calculator",
+        "notepad",
+        "mspaint",
+        "regedit",
+        "mmc",
+        "cmd",
+        "conhost",
+        "powershell",
+        "pwsh",
+        "windowsterminal",
+        "openconsole",
+        "perfmon",
+        "resmon",
+        "control"
     };
 
     private static readonly Dictionary<string, (string AppId, string DisplayName)> FriendlyAppAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -214,6 +207,7 @@ public static class OpenAppsService
         ["leagueclient"] = ("leagueclient", "League of Legends"),
         ["league of legends"] = ("league of legends", "League of Legends"),
         ["epicgameslauncher"] = ("epicgameslauncher", "Epic Games"),
+        ["riotclientux"] = ("riotclient", "Riot Client"),
         ["riotclientservices"] = ("riotclientservices", "Riot Client"),
         ["xboxpcapp"] = ("xboxpcapp", "Xbox"),
         ["eadesktop"] = ("eadesktop", "EA App")
@@ -346,11 +340,10 @@ public static class OpenAppsService
     public static bool IsIgnoredShellApp(string appId) => IgnoredShellApps.Contains(appId);
 
     /// <summary>
-    /// Lista todos os apps abertos no momento (janelas visíveis + apps de áudio na bandeja/segundo plano).
+    /// Lista estritamente os aplicativos com janela aberta na área de trabalho / barra de tarefas
+    /// (incluindo minimizados na barra de tarefas e apps UWP ativos, excluindo janelas ocultas/cloaked e daemons fechados).
     /// </summary>
-    public static List<OpenAppInfo> ListOpenApps(
-        HashSet<string> trackedAudioApps,
-        Dictionary<uint, ProcessSnapEntry>? existingSnapshot = null)
+    public static List<OpenAppInfo> ListOpenApps(Dictionary<uint, ProcessSnapEntry>? existingSnapshot = null)
     {
         var procSnap = existingSnapshot ?? CaptureProcessSnapshot();
         var result = new Dictionary<string, OpenAppInfo>(StringComparer.OrdinalIgnoreCase);
@@ -367,6 +360,7 @@ public static class OpenAppsService
 
             var (appId, displayName) = NormalizeAppIdentity(hostRawName);
             if (IgnoredShellApps.Contains(appId) || IgnoredShellApps.Contains(hostRawName)) return;
+            if (NonAudioUtilityWindows.Contains(appId) || NonAudioUtilityWindows.Contains(hostRawName)) return;
 
             if (!result.TryGetValue(appId, out var existing))
             {
@@ -384,7 +378,6 @@ public static class OpenAppsService
             }
         }
 
-        // 1. Todas as janelas visíveis da área de trabalho / barra de tarefas (incluindo UWP)
         try
         {
             EnumWindows((hWnd, _) =>
@@ -399,8 +392,16 @@ public static class OpenAppsService
 
                 if (GetWindowTextLength(hWnd) <= 0) return true;
 
+                // Janelas UWP fechadas ficam "cloaked" (DWMWA_CLOAKED != 0)
                 if (DwmGetWindowAttribute(hWnd, DwmwaCloaked, out int cloaked, sizeof(int)) == 0 && cloaked != 0)
                     return true;
+
+                // Ignora janelas auxiliares de tamanho 0x0 (exceto se estiverem minimizadas na barra de tarefas)
+                if (!IsIconic(hWnd) && GetWindowRect(hWnd, out var rect))
+                {
+                    if ((rect.Right - rect.Left) <= 0 || (rect.Bottom - rect.Top) <= 0)
+                        return true;
+                }
 
                 GetWindowThreadProcessId(hWnd, out uint pid);
                 if (pid == 0 || pid == ownPid) return true;
@@ -420,7 +421,8 @@ public static class OpenAppsService
                         }
                         return true;
                     }, IntPtr.Zero);
-                    if (uwpPid != 0) pid = uwpPid;
+                    if (uwpPid == 0) return true; // Frame vazio sem app UWP real dentro
+                    pid = uwpPid;
                 }
 
                 TryAddPid(pid);
@@ -431,36 +433,22 @@ public static class OpenAppsService
         {
         }
 
-        // 2. Apps residentes na bandeja/segundo plano (ex: Discord, WhatsApp, Spotify, Steam minimizados)
-        //    e qualquer app que já teve áudio ou volume salvo e ainda está em execução
-        foreach (var entry in procSnap.Values)
-        {
-            if (entry.Pid == 0 || entry.Pid == ownPid || string.IsNullOrWhiteSpace(entry.ExeName)) continue;
-
-            var (appId, _) = NormalizeAppIdentity(entry.ExeName);
-            if (IgnoredShellApps.Contains(appId) || IgnoredShellApps.Contains(entry.ExeName)) continue;
-
-            if (TrayResidentAudioApps.Contains(appId) ||
-                TrayResidentAudioApps.Contains(entry.ExeName) ||
-                trackedAudioApps.Contains(appId))
-            {
-                TryAddPid(entry.Pid);
-            }
-        }
-
         return new List<OpenAppInfo>(result.Values);
     }
 }
 
 /// <summary>
-/// Monitor leve de eventos WinEvent (abertura/fechamento/troca de janelas de aplicativos)
-/// para atualizar a lista de apps abertos em tempo real sem polling pesado.
+/// Monitor leve de eventos WinEvent (abertura, fechamento, ocultação e cloak/uncloak de janelas UWP)
+/// para sincronizar a lista de aplicativos em tempo real com o sistema.
 /// </summary>
 public sealed class WindowEventWatcher : IDisposable
 {
     private const uint EventSystemForeground = 0x0003;
     private const uint EventObjectDestroy = 0x8001;
     private const uint EventObjectShow = 0x8002;
+    private const uint EventObjectHide = 0x8003;
+    private const uint EventObjectCloaked = 0x8017;
+    private const uint EventObjectUncloaked = 0x8018;
     private const uint WinEventOutOfContext = 0x0000;
     private const uint WinEventSkipOwnProcess = 0x0002;
     private const int ObjidWindow = 0;
@@ -491,6 +479,7 @@ public sealed class WindowEventWatcher : IDisposable
     private readonly WinEventDelegate _proc;
     private IntPtr _hookForeground;
     private IntPtr _hookObjectLifecycle;
+    private IntPtr _hookCloak;
 
     public WindowEventWatcher(Action onAppsChanged)
     {
@@ -509,7 +498,16 @@ public sealed class WindowEventWatcher : IDisposable
 
             _hookObjectLifecycle = SetWinEventHook(
                 EventObjectDestroy,
-                EventObjectShow,
+                EventObjectHide,
+                IntPtr.Zero,
+                _proc,
+                0,
+                0,
+                WinEventOutOfContext | WinEventSkipOwnProcess);
+
+            _hookCloak = SetWinEventHook(
+                EventObjectCloaked,
+                EventObjectUncloaked,
                 IntPtr.Zero,
                 _proc,
                 0,
@@ -546,6 +544,11 @@ public sealed class WindowEventWatcher : IDisposable
         {
             try { UnhookWinEvent(_hookObjectLifecycle); } catch { }
             _hookObjectLifecycle = IntPtr.Zero;
+        }
+        if (_hookCloak != IntPtr.Zero)
+        {
+            try { UnhookWinEvent(_hookCloak); } catch { }
+            _hookCloak = IntPtr.Zero;
         }
     }
 }

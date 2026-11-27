@@ -60,7 +60,6 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _seenSessionInstances = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _knownAppIds = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _everHadAudioApps = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (float Volume, bool Muted)> _activeAppOverrides = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _lastAppActiveUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
@@ -582,8 +581,6 @@ public partial class MainWindow : Window
         foreach (var s in rawSessions)
         {
             currentApps.Add(s.AppId);
-            if (!s.IsSystemSounds && s.HasAudioSession)
-                _everHadAudioApps.Add(s.AppId);
             foreach (var inst in s.SessionInstanceIds)
                 currentInstances.Add(inst);
         }
@@ -825,17 +822,11 @@ public partial class MainWindow : Window
         var procSnap = OpenAppsService.CaptureProcessSnapshot();
         var rawSessions = _audio.RefreshAppSessions(procSnap);
 
-        // Descobre também apps abertos que ainda não criaram sessão WASAPI (ou cuja sessão expirou em silêncio)
+        // Descobre também apps com janela aberta (barra de tarefas / UWP) que ainda não criaram sessão WASAPI
         HashSet<string>? openAppIds = null;
         if (_settings.Settings.ShowAllOpenApps && !_settings.Settings.OnlyActiveApps)
         {
-            var trackedAudioApps = new HashSet<string>(_everHadAudioApps, StringComparer.OrdinalIgnoreCase);
-            trackedAudioApps.UnionWith(_activeAppOverrides.Keys);
-            trackedAudioApps.UnionWith(_settings.Settings.SavedAppVolumes.Keys);
-            trackedAudioApps.UnionWith(_settings.Settings.SavedAppMutes.Keys);
-            trackedAudioApps.UnionWith(_settings.Settings.PinnedApps);
-
-            var openApps = OpenAppsService.ListOpenApps(trackedAudioApps, procSnap);
+            var openApps = OpenAppsService.ListOpenApps(procSnap);
             openAppIds = new HashSet<string>(openApps.Select(a => a.AppId), StringComparer.OrdinalIgnoreCase);
 
             var existingIds = new HashSet<string>(rawSessions.Select(s => s.AppId), StringComparer.OrdinalIgnoreCase);

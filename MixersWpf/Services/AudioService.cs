@@ -683,6 +683,13 @@ public sealed class AudioService : IDisposable
                     }
                     else
                     {
+                        // Remove sessões "zumbis" (Inactive) cujo processo já foi encerrado pelo usuário
+                        if (state != AudioSessionState.AudioSessionStateActive && !procSnap.ContainsKey(pid))
+                        {
+                            try { s.Dispose(); } catch { }
+                            continue;
+                        }
+
                         var metaKey = (pid, sessionId);
                         if (_sessionMetaCache.TryGetValue(metaKey, out var cachedMeta))
                         {

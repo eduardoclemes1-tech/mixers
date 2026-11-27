@@ -3,6 +3,13 @@
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o padrão [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.2.2] - 2026-11-27
+
+### Corrigido
+- Sincronização rigorosa com o Windows: removida a listagem de processos fechados em segundo plano/daemons (como `RiotClientServices` e `SnippingTool`), exibindo apenas aplicativos com janela realmente aberta (barra de tarefas/UWP) ou sessão WASAPI de processo vivo.
+- Descarte automático de sessões WASAPI `Inactive` zumbis cujo `PID` já encerrou.
+- Monitoramento de eventos `EVENT_OBJECT_HIDE`, `EVENT_OBJECT_CLOAKED` e `EVENT_OBJECT_UNCLOAKED` para remover apps instantaneamente ao fechar a janela.
+
 ## [2.2.1] - 2026-11-27
 
 ### Corrigido
