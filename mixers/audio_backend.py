@@ -81,7 +81,7 @@ class MicTestMonitor:
             return True
         try:
             import ctypes
-            from ctypes import Structure, byref, c_uint, c_ulong, c_ushort, c_void_p
+            from ctypes import POINTER, Structure, byref, c_uint, c_ulong, c_ushort, c_void_p
 
             class WAVEFORMATEX(Structure):
                 _fields_ = [
@@ -95,13 +95,25 @@ class MicTestMonitor:
                 ]
 
             winmm = ctypes.windll.winmm
+            winmm.waveInOpen.argtypes = [
+                POINTER(c_void_p),
+                c_uint,
+                POINTER(WAVEFORMATEX),
+                c_void_p,
+                c_void_p,
+                c_uint,
+            ]
+            winmm.waveInOpen.restype = c_uint
+            winmm.waveInStart.argtypes = [c_void_p]
+            winmm.waveInStart.restype = c_uint
+
             wfx = WAVEFORMATEX(1, 1, 16000, 32000, 2, 16, 0)  # PCM 16kHz mono
             h_wave_in = c_void_p()
             # WAVE_MAPPER = 0xFFFFFFFF, CALLBACK_NULL = 0
             res = winmm.waveInOpen(
-                byref(h_wave_in), c_uint(0xFFFFFFFF), byref(wfx), 0, 0, 0
+                byref(h_wave_in), c_uint(0xFFFFFFFF), byref(wfx), None, None, c_uint(0)
             )
-            if res != 0:
+            if res != 0 or not h_wave_in.value:
                 return False
             winmm.waveInStart(h_wave_in)
             self._handle = h_wave_in
@@ -117,8 +129,13 @@ class MicTestMonitor:
         if sys.platform == "win32" and self._handle is not None:
             try:
                 import ctypes
+                from ctypes import c_uint, c_void_p
 
                 winmm = ctypes.windll.winmm
+                winmm.waveInStop.argtypes = [c_void_p]
+                winmm.waveInStop.restype = c_uint
+                winmm.waveInClose.argtypes = [c_void_p]
+                winmm.waveInClose.restype = c_uint
                 winmm.waveInStop(self._handle)
                 winmm.waveInClose(self._handle)
             except Exception:

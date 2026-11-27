@@ -39,6 +39,7 @@ from mixers.windows_integration import (
     get_windows_accent_rgb,
     get_work_area,
     is_autostart_enabled,
+    is_our_process_foreground,
     set_autostart,
 )
 
@@ -99,6 +100,7 @@ class MixersApp(ctk.CTk):
 
         self._session_timer_id: str | None = None
         self._meter_timer_id: str | None = None
+        self._alpha_save_timer_id: str | None = None
         self._last_slider_ts: float = 0.0
         self._last_master_pct: int = -1
         self._last_master_muted: bool | None = None
@@ -761,16 +763,38 @@ class MixersApp(ctk.CTk):
     def _on_focus_out(self, _event) -> None:
         if self._pinned or self._dialog_open or self._recording_hotkey or not self._is_visible:
             return
-        self.after(120, self._hide_if_still_unfocused)
+        self.after(160, self._hide_if_still_unfocused)
 
     def _hide_if_still_unfocused(self) -> None:
         if self._pinned or self._dialog_open or self._recording_hotkey or not self._is_visible:
             return
         try:
-            if self.focus_displayof() is None:
-                self.hide_to_tray()
+            # Nunca esconde se o usuário ainda estiver interagindo com o próprio Mixers
+            if is_our_process_foreground():
+                return
+            # Também não esconde se o ponteiro do mouse ainda estiver dentro do painel
+            px, py = self.winfo_pointerxy()
+            wx, wy = self.winfo_rootx(), self.winfo_rooty()
+            ww, wh = self.winfo_width(), self.winfo_height()
+            if wx <= px <= wx + ww and wy <= py <= wy + wh:
+                return
+            self.hide_to_tray()
         except Exception:
             pass
+
+    def report_callback_exception(self, exc, val, tb) -> None:
+        """Registra erros inesperados em %APPDATA%/Mixers/mixers.log sem fechar o app."""
+        try:
+            import traceback
+            from pathlib import Path
+
+            log_dir = Path(os.environ.get("APPDATA") or Path.home()) / "Mixers"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            with open(log_dir / "mixers.log", "a", encoding="utf-8") as f:
+                f.write("".join(traceback.format_exception(exc, val, tb)) + "\n")
+        except Exception:
+            pass
+        self._set_status(f"Aviso: {self._truncate(str(val), 30)}")
 
     def quit_app(self) -> None:
         self._stop_live_loops()
@@ -1239,11 +1263,19 @@ class MixersApp(ctk.CTk):
         clamped = max(65, min(100, int(pct)))
         self._alpha = clamped / 100.0
         self.alpha_lbl.configure(text=f"{clamped}%")
-        self.settings.set("alpha", round(self._alpha, 2))
         try:
             self.attributes("-alpha", self._alpha)
         except Exception:
             pass
+        # Debounce da gravação em disco para não travar enquanto arrasta
+        if self._alpha_save_timer_id is not None:
+            try:
+                self.after_cancel(self._alpha_save_timer_id)
+            except Exception:
+                pass
+        self._alpha_save_timer_id = self.after(
+            350, lambda: self.settings.set("alpha", round(self._alpha, 2))
+        )
 
     def _on_autostart_switch(self) -> None:
         desired = self._autostart_var.get()

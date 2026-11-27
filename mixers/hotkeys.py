@@ -157,8 +157,11 @@ class GlobalHotkeyManager:
         if sys.platform == "win32" and self._win_thread_id:
             try:
                 import ctypes
+                from ctypes import c_uint, c_ulong, c_void_p
 
-                ctypes.windll.user32.PostThreadMessageW(self._win_thread_id, WM_QUIT, 0, 0)
+                user32 = ctypes.windll.user32
+                user32.PostThreadMessageW.argtypes = [c_ulong, c_uint, c_void_p, c_void_p]
+                user32.PostThreadMessageW(c_ulong(self._win_thread_id), c_uint(WM_QUIT), None, None)
             except Exception:
                 pass
         if self._thread is not None and self._thread.is_alive():
@@ -172,6 +175,8 @@ class GlobalHotkeyManager:
 
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
+        user32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+        user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
         self._win_thread_id = kernel32.GetCurrentThreadId()
 
         if not user32.RegisterHotKey(None, HOTKEY_ID, modifiers, vk_code):

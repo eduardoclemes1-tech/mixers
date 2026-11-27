@@ -101,29 +101,51 @@ def derive_theme_from_accent(accent_rgb: tuple[int, int, int]) -> dict[str, str]
 
 
 def apply_windows_glass_style(hwnd: int) -> None:
-    """Aplica modo escuro, cantos arredondados e backdrop Acrylic nativo do Windows 11."""
+    """Aplica modo escuro e cantos arredondados nativos do Windows 11 com tipos 64-bit seguros."""
     if sys.platform != "win32" or not hwnd:
         return
 
     try:
         import ctypes
-        from ctypes import byref, c_int, sizeof
+        from ctypes import byref, c_int, c_long, c_uint, c_void_p, sizeof
 
         dwmapi = ctypes.windll.dwmapi
+        dwmapi.DwmSetWindowAttribute.argtypes = [c_void_p, c_uint, c_void_p, c_uint]
+        dwmapi.DwmSetWindowAttribute.restype = c_long
 
+        handle = c_void_p(hwnd)
         # Modo escuro na janela (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
         dark = c_int(1)
-        dwmapi.DwmSetWindowAttribute(hwnd, 20, byref(dark), sizeof(dark))
+        dwmapi.DwmSetWindowAttribute(handle, 20, byref(dark), sizeof(dark))
 
         # Cantos arredondados no Windows 11 (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
         round_corners = c_int(2)
-        dwmapi.DwmSetWindowAttribute(hwnd, 33, byref(round_corners), sizeof(round_corners))
-
-        # Backdrop Acrylic nativo do Windows 11 (DWMWA_SYSTEMBACKDROP_TYPE = 38, DWMSBT_TRANSIENTWINDOW = 3)
-        acrylic = c_int(3)
-        dwmapi.DwmSetWindowAttribute(hwnd, 38, byref(acrylic), sizeof(acrylic))
+        dwmapi.DwmSetWindowAttribute(handle, 33, byref(round_corners), sizeof(round_corners))
     except Exception:
         pass
+
+
+def is_our_process_foreground() -> bool:
+    """Retorna True se a janela ativa no Windows pertence ao próprio processo Mixers."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        from ctypes import byref, c_ulong, c_void_p
+
+        user32 = ctypes.windll.user32
+        user32.GetForegroundWindow.restype = c_void_p
+        user32.GetWindowThreadProcessId.argtypes = [c_void_p, ctypes.POINTER(c_ulong)]
+        user32.GetWindowThreadProcessId.restype = c_ulong
+
+        fg = user32.GetForegroundWindow()
+        if not fg:
+            return False
+        pid = c_ulong(0)
+        user32.GetWindowThreadProcessId(fg, byref(pid))
+        return int(pid.value) == os.getpid()
+    except Exception:
+        return True
 
 
 def get_work_area(screen_w: int, screen_h: int) -> tuple[int, int, int, int]:
