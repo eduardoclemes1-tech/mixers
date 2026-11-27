@@ -23,10 +23,10 @@ public static class UpdateService
 
     private static readonly HttpClient Http = new(new HttpClientHandler
     {
-        AllowAutoRedirect = true
+        AllowAutoRedirect = false
     })
     {
-        Timeout = TimeSpan.FromSeconds(12)
+        Timeout = TimeSpan.FromSeconds(10)
     };
 
     static UpdateService()
@@ -38,9 +38,23 @@ public static class UpdateService
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, LatestWebUrl);
         using var resp = await Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead);
-        resp.EnsureSuccessStatusCode();
 
-        string finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
+        string finalUrl = "";
+        if ((int)resp.StatusCode is >= 300 and < 400 && resp.Headers.Location != null)
+        {
+            finalUrl = resp.Headers.Location.IsAbsoluteUri
+                ? resp.Headers.Location.ToString()
+                : $"https://github.com{resp.Headers.Location}";
+        }
+        else if (resp.IsSuccessStatusCode)
+        {
+            finalUrl = resp.RequestMessage?.RequestUri?.ToString() ?? "";
+        }
+        else
+        {
+            resp.EnsureSuccessStatusCode();
+        }
+
         var match = Regex.Match(finalUrl, @"/releases/tag/([^/?#]+)");
         if (!match.Success) return null;
 

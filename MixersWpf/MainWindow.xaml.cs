@@ -17,7 +17,7 @@ namespace Mixers;
 public partial class MainWindow : Window
 {
     private const double BaseWindowWidth = 356;
-    private const double MinWindowHeight = 350;
+    private const double MinWindowHeight = 384;
     private const double MaxWindowHeight = 560;
 
     private static readonly SolidColorBrush PrimaryTextBrush = CreateFrozenBrush(Color.FromRgb(244, 244, 248));
@@ -145,7 +145,6 @@ public partial class MainWindow : Window
         Deactivated += (_, _) => OnWindowDeactivated();
         PreviewKeyDown += OnWindowKeyDown;
 
-        RefreshProfilesCombo();
         UpdateMicsVisibilityVisual();
         RefreshAudioState(forceRebuild: true);
 
@@ -888,26 +887,32 @@ public partial class MainWindow : Window
             CancelRecordHotkey();
             return;
         }
+        // Pausa o atalho atual durante a gravação para o Windows não interceptar a tecla!
+        _hotkey.Unregister();
         _recordingHotkey = true;
-        RecordHotkeyBtn.Content = "Cancelar";
-        HotkeyBadgeText.Text = "Pressione...";
-        StatusText.Text = "Pressione o atalho (ex: Ctrl+Alt+M) ou Esc.";
+        HotkeyRecordBtn.Content = "Pressione as teclas...";
+        HotkeyRecordBtn.Background = new SolidColorBrush(_theme.Accent);
+        StatusText.Text = "Pressione a combinação (ex: Ctrl+Alt+M) ou Esc.";
     }
 
     private void CancelRecordHotkey()
     {
+        if (!_recordingHotkey) return;
         _recordingHotkey = false;
-        RecordHotkeyBtn.Content = "Gravar";
+        if (!string.IsNullOrEmpty(_settings.Settings.Hotkey))
+        {
+            _hotkey.Register(_settings.Settings.Hotkey);
+        }
         UpdateHotkeyBadge(_hotkey.CurrentHotkey);
+        StatusText.Text = "Gravação cancelada.";
     }
 
     private void ClearHotkeyBtn_Click(object sender, RoutedEventArgs e)
     {
         _recordingHotkey = false;
-        _hotkey.Register("");
+        _hotkey.Unregister();
         _settings.Settings.Hotkey = "";
         _settings.SaveSettings();
-        RecordHotkeyBtn.Content = "Gravar";
         UpdateHotkeyBadge("");
         StatusText.Text = "Atalho desativado.";
     }
@@ -954,23 +959,25 @@ public partial class MainWindow : Window
 
         var (ok, msg) = _hotkey.Register(combo);
         _recordingHotkey = false;
-        RecordHotkeyBtn.Content = "Gravar";
         if (ok)
         {
             _settings.Settings.Hotkey = _hotkey.CurrentHotkey;
             _settings.SaveSettings();
+            StatusText.Text = $"✓ Atalho salvo: {_hotkey.CurrentHotkey}";
         }
-        else if (!string.IsNullOrEmpty(_settings.Settings.Hotkey))
+        else
         {
-            _hotkey.Register(_settings.Settings.Hotkey);
+            if (!string.IsNullOrEmpty(_settings.Settings.Hotkey))
+                _hotkey.Register(_settings.Settings.Hotkey);
+            StatusText.Text = msg;
         }
         UpdateHotkeyBadge(_hotkey.CurrentHotkey);
-        StatusText.Text = msg;
     }
 
     private void UpdateHotkeyBadge(string hk)
     {
-        HotkeyBadgeText.Text = string.IsNullOrEmpty(hk) ? "Desativado" : hk;
+        HotkeyRecordBtn.Background = SubtleButtonBrush;
+        HotkeyRecordBtn.Content = string.IsNullOrEmpty(hk) ? "Clique para definir atalho" : hk;
     }
 
     private void PresetFullBtn_Click(object sender, RoutedEventArgs e) => ApplyPresetFull();
@@ -1004,67 +1011,6 @@ public partial class MainWindow : Window
         foreach (var s in _sessions) _audio.SetAppMute(s.AppId, true);
         if (_isVisible) RefreshAudioState(forceRebuild: false);
         StatusText.Text = "Apps mutados.";
-    }
-
-    private void RefreshProfilesCombo(string? selectName = null)
-    {
-        ProfilesCombo.Items.Clear();
-        if (_settings.Profiles.Count == 0)
-        {
-            ProfilesCombo.Items.Add("Sem perfis salvos");
-            ProfilesCombo.SelectedIndex = 0;
-            return;
-        }
-        foreach (string name in _settings.Profiles.Keys.OrderBy(k => k))
-            ProfilesCombo.Items.Add(name);
-
-        if (selectName != null && ProfilesCombo.Items.Contains(selectName))
-            ProfilesCombo.SelectedItem = selectName;
-        else
-            ProfilesCombo.SelectedIndex = 0;
-    }
-
-    private void SaveProfileBtn_Click(object sender, RoutedEventArgs e)
-    {
-        string name = $"Perfil {_settings.Profiles.Count + 1}";
-        var prof = new AudioProfile
-        {
-            MasterVolume = _audio.GetMasterVolume(),
-            MasterMuted = _audio.GetMasterMute()
-        };
-        foreach (var s in _sessions)
-        {
-            prof.Apps[s.AppId] = new AppProfileEntry { Volume = s.Volume, Muted = s.Muted };
-        }
-        _settings.Profiles[name] = prof;
-        _settings.SaveProfiles();
-        RefreshProfilesCombo(name);
-        StatusText.Text = $"'{name}' salvo.";
-    }
-
-    private void ApplyProfileBtn_Click(object sender, RoutedEventArgs e)
-    {
-        string? name = ProfilesCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(name) || !_settings.Profiles.TryGetValue(name, out var prof)) return;
-
-        _audio.SetMasterVolume(prof.MasterVolume);
-        _audio.SetMasterMute(prof.MasterMuted);
-        foreach (var (appId, cfg) in prof.Apps)
-        {
-            _audio.SetAppVolume(appId, cfg.Volume);
-            _audio.SetAppMute(appId, cfg.Muted);
-        }
-        RefreshAudioState(forceRebuild: false);
-        StatusText.Text = $"'{name}' aplicado.";
-    }
-
-    private void DeleteProfileBtn_Click(object sender, RoutedEventArgs e)
-    {
-        string? name = ProfilesCombo.SelectedItem as string;
-        if (string.IsNullOrEmpty(name) || !_settings.Profiles.Remove(name)) return;
-        _settings.SaveProfiles();
-        RefreshProfilesCombo();
-        StatusText.Text = $"'{name}' removido.";
     }
 
     // ------------------------------------------------------------------

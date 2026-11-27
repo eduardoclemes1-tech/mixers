@@ -223,78 +223,89 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,12,16,10">
+                <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,14,16,12">
                     <ScrollViewer VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel>
-                        <!-- Opacidade -->
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="38"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Opacidade" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <controls:VolumeSliderControl x:Name="OpacitySlider" Grid.Column="1" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="OpacityPercentText" Grid.Column="2" Text="90%" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="11.5" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-                        </Grid>
+                        <StackPanel>
+                            <!-- Opacidade -->
+                            <Grid Margin="0,0,0,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="38"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Opacidade" Foreground="#B4B0C4" FontFamily="Segoe UI" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <controls:VolumeSliderControl x:Name="OpacitySlider" Grid.Column="1" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="OpacityPercentText" Grid.Column="2" Text="90%" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                            </Grid>
 
-                        <!-- Toggles -->
-                        <CheckBox x:Name="AnimationsCheck"
-                                  Style="{StaticResource ModernCheckBoxStyle}"
-                                  Content="Animações suaves ao abrir/fechar"
-                                  Margin="0,0,0,10"
-                                  Click="AnimationsCheck_Click"/>
+                            <!-- Switches limpos -->
+                            <CheckBox x:Name="AnimationsCheck"
+                                      Style="{StaticResource ModernCheckBoxStyle}"
+                                      Content="Animações suaves"
+                                      Margin="0,0,0,11"
+                                      Click="AnimationsCheck_Click"/>
 
-                        <CheckBox x:Name="AutostartCheck"
-                                  Style="{StaticResource ModernCheckBoxStyle}"
-                                  Content="Iniciar com o Windows"
-                                  Margin="0,0,0,10"
-                                  Click="AutostartCheck_Click"/>
+                            <CheckBox x:Name="AutostartCheck"
+                                      Style="{StaticResource ModernCheckBoxStyle}"
+                                      Content="Iniciar com o Windows"
+                                      Margin="0,0,0,11"
+                                      Click="AutostartCheck_Click"/>
 
-                        <CheckBox x:Name="PinCheck"
-                                  Style="{StaticResource ModernCheckBoxStyle}"
-                                  Content="Fixar painel na tela"
-                                  Margin="0,0,0,12"
-                                  Click="PinCheck_Click"/>
+                            <CheckBox x:Name="PinCheck"
+                                      Style="{StaticResource ModernCheckBoxStyle}"
+                                      Content="Fixar painel na tela"
+                                      Margin="0,0,0,16"
+                                      Click="PinCheck_Click"/>
 
-                        <!-- Atalho Global -->
-                        <Grid Margin="0,0,0,12">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="Atalho:" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11.5" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                            <Border Grid.Column="1" Background="#1EFFFFFF" CornerRadius="6" Padding="8,3" HorizontalAlignment="Left">
-                                <TextBlock x:Name="HotkeyBadgeText" Text="Ctrl+Alt+M" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="11" FontWeight="SemiBold"/>
-                            </Border>
-                            <Button Grid.Column="2" Content="Limpar" Style="{StaticResource PillButtonStyle}" Background="Transparent" Foreground="#A8A4B8" Margin="4,0,4,0" Click="ClearHotkeyBtn_Click"/>
-                            <Button x:Name="RecordHotkeyBtn" Grid.Column="3" Content="Gravar" Style="{StaticResource PillButtonStyle}" FontWeight="SemiBold" Click="RecordHotkeyBtn_Click"/>
-                        </Grid>
+                            <!-- Atalho Global simplificado (1 clique para gravar) -->
+                            <TextBlock Text="Atalho para abrir / ocultar"
+                                       Foreground="#A8A4B8"
+                                       FontFamily="Segoe UI"
+                                       FontSize="11"
+                                       Margin="0,0,0,6"/>
 
-                        <!-- Ações rápidas -->
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
-                            <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Margin="0,0,6,0" Click="PresetFullBtn_Click"/>
-                            <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Margin="0,0,6,0" Click="PresetFocusBtn_Click"/>
-                            <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Background="#887F1D2D" Click="PresetMuteBtn_Click"/>
+                            <Grid Margin="0,0,0,16">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Button x:Name="HotkeyRecordBtn"
+                                        Grid.Column="0"
+                                        Content="Ctrl+Alt+M"
+                                        Style="{StaticResource PillButtonStyle}"
+                                        Height="30"
+                                        FontSize="12"
+                                        FontWeight="SemiBold"
+                                        HorizontalContentAlignment="Center"
+                                        ToolTip="Clique e pressione o atalho desejado (ex: Ctrl+Alt+M)"
+                                        Click="RecordHotkeyBtn_Click"/>
+
+                                <Button x:Name="ClearHotkeyBtn"
+                                        Grid.Column="1"
+                                        Style="{StaticResource IconButtonStyle}"
+                                        Width="30" Height="30"
+                                        Margin="6,0,0,0"
+                                        ToolTip="Desativar atalho"
+                                        Click="ClearHotkeyBtn_Click">
+                                    <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
+                                </Button>
+                            </Grid>
+
+                            <!-- Ações rápidas (3 colunas simétricas) -->
+                            <TextBlock Text="Ações rápidas"
+                                       Foreground="#A8A4B8"
+                                       FontFamily="Segoe UI"
+                                       FontSize="11"
+                                       Margin="0,0,0,6"/>
+
+                            <UniformGrid Columns="3">
+                                <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Height="28" Margin="0,0,4,0" Click="PresetFullBtn_Click"/>
+                                <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Height="28" Margin="2,0,2,0" Click="PresetFocusBtn_Click"/>
+                                <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Height="28" Background="#887F1D2D" Margin="4,0,0,0" Click="PresetMuteBtn_Click"/>
+                            </UniformGrid>
                         </StackPanel>
-
-                        <!-- Perfis -->
-                        <Grid Margin="0,0,0,4">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <ComboBox x:Name="ProfilesCombo" Height="26" Margin="0,0,6,0" FontSize="11"/>
-                            <Button Grid.Column="1" Content="Aplicar" Style="{StaticResource PillButtonStyle}" Background="{DynamicResource AccentBrush}" Margin="0,0,4,0" Click="ApplyProfileBtn_Click"/>
-                            <Button Grid.Column="2" Content="Salvar" Style="{StaticResource PillButtonStyle}" Margin="0,0,4,0" Click="SaveProfileBtn_Click"/>
-                            <Button Grid.Column="3" Content="X" Style="{StaticResource PillButtonStyle}" Background="#667F1D2D" Padding="8,4" Click="DeleteProfileBtn_Click"/>
-                        </Grid>
-                    </StackPanel>
                     </ScrollViewer>
                 </Border>
 
