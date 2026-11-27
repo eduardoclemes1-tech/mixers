@@ -129,9 +129,6 @@ public partial class MainWindow : Window
         _tray = new TrayService(
             onToggle: () => Dispatcher.Invoke(ToggleFlyout),
             onToggleMicMute: () => Dispatcher.Invoke(ToggleGlobalMicMute),
-            onFullVolume: () => Dispatcher.Invoke(ApplyPresetFull),
-            onFocusMode: () => Dispatcher.Invoke(ApplyPresetFocus),
-            onMuteApps: () => Dispatcher.Invoke(ApplyPresetMute),
             onToggleAutostart: () => Dispatcher.Invoke(ToggleAutostartFromTray),
             isAutostart: WindowsThemeService.IsAutostartEnabled,
             onCheckUpdates: () => Dispatcher.Invoke(() => _ = CheckUpdatesAsync(manual: true)),
@@ -1281,39 +1278,6 @@ public partial class MainWindow : Window
         string micLbl = _hotkey.GetHotkeyLabel(HotkeyService.MicMuteHotkeyId);
         MicHotkeyBtn.Background = SubtleButtonBrush;
         MicHotkeyBtn.Content = string.IsNullOrEmpty(micLbl) ? "Clique para definir" : micLbl;
-    }
-
-    private void PresetFullBtn_Click(object sender, RoutedEventArgs e) => ApplyPresetFull();
-    private void PresetFocusBtn_Click(object sender, RoutedEventArgs e) => ApplyPresetFocus();
-    private void PresetMuteBtn_Click(object sender, RoutedEventArgs e) => ApplyPresetMute();
-
-    private void ApplyPresetFull()
-    {
-        foreach (var s in _sessions)
-        {
-            _audio.SetAppMute(s.AppId, false);
-            _audio.SetAppVolume(s.AppId, 1f);
-        }
-        if (_isVisible) RefreshAudioState(forceRebuild: false);
-        StatusText.Text = "Apps em 100%.";
-    }
-
-    private void ApplyPresetFocus()
-    {
-        foreach (var s in _sessions)
-        {
-            _audio.SetAppMute(s.AppId, false);
-            _audio.SetAppVolume(s.AppId, 0.30f);
-        }
-        if (_isVisible) RefreshAudioState(forceRebuild: false);
-        StatusText.Text = "Modo Foco (30%).";
-    }
-
-    private void ApplyPresetMute()
-    {
-        foreach (var s in _sessions) _audio.SetAppMute(s.AppId, true);
-        if (_isVisible) RefreshAudioState(forceRebuild: false);
-        StatusText.Text = "Apps mutados.";
     }
 
     // ------------------------------------------------------------------

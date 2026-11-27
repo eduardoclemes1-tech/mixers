@@ -319,7 +319,7 @@
 
                             <!-- Atalho 2: Mutar Microfone -->
                             <TextBlock Text="Atalho: Mutar / desmutar microfone" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,4"/>
-                            <Grid Margin="0,0,0,14">
+                            <Grid Margin="0,0,0,6">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -329,14 +329,6 @@
                                     <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
                                 </Button>
                             </Grid>
-
-                            <!-- Ações rápidas -->
-                            <TextBlock Text="Ações rápidas" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,6"/>
-                            <UniformGrid Columns="3">
-                                <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Height="27" Margin="0,0,4,0" Click="PresetFullBtn_Click"/>
-                                <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Height="27" Margin="2,0,2,0" Click="PresetFocusBtn_Click"/>
-                                <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Height="27" Background="#887F1D2D" Margin="4,0,0,0" Click="PresetMuteBtn_Click"/>
-                            </UniformGrid>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>

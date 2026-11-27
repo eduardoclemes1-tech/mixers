@@ -17,9 +17,6 @@ public sealed class TrayService : IDisposable
     public TrayService(
         Action onToggle,
         Action onToggleMicMute,
-        Action onFullVolume,
-        Action onFocusMode,
-        Action onMuteApps,
         Action onToggleAutostart,
         Func<bool> isAutostart,
         Action onCheckUpdates,
@@ -30,10 +27,6 @@ public sealed class TrayService : IDisposable
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Abrir / Ocultar Mixers", null, (_, _) => onToggle());
         menu.Items.Add("Mutar / Desmutar Microfone", null, (_, _) => onToggleMicMute());
-        menu.Items.Add(new Forms.ToolStripSeparator());
-        menu.Items.Add("100% Tudo", null, (_, _) => onFullVolume());
-        menu.Items.Add("Modo Foco (30%)", null, (_, _) => onFocusMode());
-        menu.Items.Add("Mutar Apps", null, (_, _) => onMuteApps());
         menu.Items.Add(new Forms.ToolStripSeparator());
 
         _autostartItem = new Forms.ToolStripMenuItem("Iniciar com o Windows")
