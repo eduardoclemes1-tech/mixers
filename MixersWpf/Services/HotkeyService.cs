@@ -124,7 +124,14 @@ public sealed class HotkeyService : IDisposable
                     if (!modLabels.Contains("Win")) modLabels.Add("Win");
                     break;
                 default:
-                    if (Enum.TryParse<Key>(raw, true, out Key key) && key != Key.None)
+                    if (raw.StartsWith("VK_0x", StringComparison.OrdinalIgnoreCase) &&
+                        uint.TryParse(raw[5..], System.Globalization.NumberStyles.HexNumber, null, out uint rawVk) &&
+                        rawVk > 0)
+                    {
+                        vk = rawVk;
+                        keyLabel = $"VK_0x{rawVk:X2}";
+                    }
+                    else if (Enum.TryParse<Key>(raw, true, out Key key) && key != Key.None)
                     {
                         vk = (uint)KeyInterop.VirtualKeyFromKey(key);
                         keyLabel = raw.Length == 1 ? raw.ToUpperInvariant() : key.ToString();
@@ -143,8 +150,6 @@ public sealed class HotkeyService : IDisposable
         }
 
         if (vk == 0) return false;
-        bool isFunctionKey = vk >= 0x70 && vk <= 0x87;
-        if (mods == 0 && !isFunctionKey) return false;
 
         modLabels.Add(keyLabel);
         normalized = string.Join("+", modLabels);

@@ -8,7 +8,7 @@ namespace Mixers;
 
 public partial class App : System.Windows.Application
 {
-    public const string AppVersion = "1.3.0";
+    public const string AppVersion = "1.3.1";
     private Mutex? _singleInstanceMutex;
 
     protected override void OnStartup(StartupEventArgs e)

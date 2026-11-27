@@ -954,6 +954,10 @@ public partial class MainWindow : Window
         if (keyName.Length == 2 && keyName[0] == 'D' && char.IsDigit(keyName[1]))
             keyName = keyName[1].ToString();
 
+        int vk = KeyInterop.VirtualKeyFromKey(key);
+        if (key == Key.None && vk > 0)
+            keyName = $"VK_0x{vk:X2}";
+
         mods.Add(keyName);
         string combo = string.Join("+", mods);
 

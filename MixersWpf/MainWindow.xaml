@@ -258,11 +258,17 @@
                                       Margin="0,0,0,16"
                                       Click="PinCheck_Click"/>
 
-                            <!-- Atalho Global simplificado (1 clique para gravar) -->
+                            <!-- Atalho Global simplificado (aceita 1 botão especial ou combinação) -->
                             <TextBlock Text="Atalho para abrir / ocultar"
                                        Foreground="#A8A4B8"
                                        FontFamily="Segoe UI"
                                        FontSize="11"
+                                       Margin="0,0,0,2"/>
+
+                            <TextBlock Text="Aceita 1 tecla/botão especial ou combinação (ex: Ctrl+Alt+M)"
+                                       Foreground="#7A768C"
+                                       FontFamily="Segoe UI"
+                                       FontSize="10"
                                        Margin="0,0,0,6"/>
 
                             <Grid Margin="0,0,0,16">
@@ -279,7 +285,7 @@
                                         FontSize="12"
                                         FontWeight="SemiBold"
                                         HorizontalContentAlignment="Center"
-                                        ToolTip="Clique e pressione o atalho desejado (ex: Ctrl+Alt+M)"
+                                        ToolTip="Clique e pressione qualquer botão especial do teclado ou combinação"
                                         Click="RecordHotkeyBtn_Click"/>
 
                                 <Button x:Name="ClearHotkeyBtn"
