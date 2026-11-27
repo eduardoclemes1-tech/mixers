@@ -1045,7 +1045,11 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            if (manual) StatusText.Text = $"Erro: {ex.Message}";
+            if (manual)
+            {
+                StatusText.Text = $"Erro: {ex.Message}";
+                StatusText.ToolTip = ex.Message;
+            }
         }
     }
 
@@ -1077,6 +1081,7 @@ public partial class MainWindow : Window
             UpdateNowBtn.IsEnabled = true;
             UpdateNowBtn.Content = "Atualizar";
             StatusText.Text = $"Erro: {ex.Message}";
+            StatusText.ToolTip = ex.Message;
         }
         finally
         {
