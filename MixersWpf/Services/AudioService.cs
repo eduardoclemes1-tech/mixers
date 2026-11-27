@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
+using System.Text;
 using NAudio.CoreAudioApi;
 using NAudio.CoreAudioApi.Interfaces;
 using NAudio.Wave;
@@ -13,6 +16,7 @@ public sealed class AppSessionInfo
     public string AppId { get; init; } = "";
     public string DisplayName { get; init; } = "";
     public string? ExePath { get; set; }
+    public string? IconPath { get; set; }
     public float Volume { get; set; }
     public bool Muted { get; set; }
     public float PeakLevel { get; set; }
@@ -31,6 +35,39 @@ public sealed class MicrophoneInfo
 public sealed class AudioService : IDisposable
 {
     public const string SystemSoundsId = "__system_sounds__";
+    private const uint ProcessQueryLimitedInformation = 0x1000;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, uint dwProcessId);
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool QueryFullProcessImageName(IntPtr hProcess, uint dwFlags, StringBuilder lpExeName, ref uint lpdwSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    private static string? GetProcessExePathSafe(uint pid)
+    {
+        IntPtr hProc = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (hProc == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint size = (uint)sb.Capacity;
+            if (QueryFullProcessImageName(hProc, 0, sb, ref size) && size > 0)
+            {
+                return sb.ToString();
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+        return null;
+    }
 
     private readonly MMDeviceEnumerator _enumerator = new();
     private MMDevice? _defaultOutput;
@@ -170,6 +207,14 @@ public sealed class AudioService : IDisposable
                     string appId;
                     string displayName;
                     string? exePath = null;
+                    string? iconPath = null;
+                    try
+                    {
+                        iconPath = s.IconPath;
+                    }
+                    catch
+                    {
+                    }
 
                     if (isSys)
                     {
@@ -195,25 +240,30 @@ public sealed class AudioService : IDisposable
                             }
                             else
                             {
-                                try
+                                exePath = GetProcessExePathSafe(pid);
+                                string? rawName = null;
+                                if (!string.IsNullOrEmpty(exePath))
                                 {
-                                    using var proc = Process.GetProcessById((int)pid);
-                                    string rawName = proc.ProcessName;
-                                    appId = rawName.ToLowerInvariant();
-                                    displayName = FormatAppName(rawName);
+                                    rawName = Path.GetFileNameWithoutExtension(exePath);
+                                }
+                                else
+                                {
                                     try
                                     {
-                                        exePath = proc.MainModule?.FileName;
+                                        using var proc = Process.GetProcessById((int)pid);
+                                        rawName = proc.ProcessName;
+                                        try { exePath = proc.MainModule?.FileName; } catch { }
                                     }
                                     catch
                                     {
+                                        continue;
                                     }
-                                    _pidMetaCache[pid] = (appId, displayName, exePath);
                                 }
-                                catch
-                                {
-                                    continue;
-                                }
+
+                                if (string.IsNullOrWhiteSpace(rawName)) continue;
+                                appId = rawName.ToLowerInvariant();
+                                displayName = FormatAppName(rawName);
+                                _pidMetaCache[pid] = (appId, displayName, exePath);
                             }
                         }
                     }
@@ -246,6 +296,7 @@ public sealed class AudioService : IDisposable
                             AppId = appId,
                             DisplayName = displayName,
                             ExePath = exePath,
+                            IconPath = iconPath,
                             Volume = vol,
                             Muted = muted,
                             PeakLevel = peak,
@@ -256,6 +307,8 @@ public sealed class AudioService : IDisposable
                     {
                         if (string.IsNullOrEmpty(info.ExePath) && !string.IsNullOrEmpty(exePath))
                             info.ExePath = exePath;
+                        if (string.IsNullOrEmpty(info.IconPath) && !string.IsNullOrEmpty(iconPath))
+                            info.IconPath = iconPath;
                         if (peak > info.PeakLevel)
                             info.PeakLevel = peak;
                     }

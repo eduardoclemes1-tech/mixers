@@ -530,7 +530,7 @@ public partial class MainWindow : Window
             };
         }
 
-        var exeIcon = IconService.GetExeIcon(session.ExePath);
+        var exeIcon = IconService.GetAppIcon(session.ExePath, session.IconPath);
         if (exeIcon != null)
         {
             return new Image
