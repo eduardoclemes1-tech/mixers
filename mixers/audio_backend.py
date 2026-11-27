@@ -35,6 +35,7 @@ class AppAudioSession:
     muted: bool
     pids: List[int]
     peak_level: float = 0.0  # 0.0 a 1.0 (nível de som em tempo real)
+    exe_path: str | None = None
 
 
 @dataclass
@@ -436,16 +437,20 @@ class WindowsAudioBackend(AudioBackend):
         except Exception:
             return None
 
-    def _get_session_app_id(self, session) -> tuple[str, str, int | None]:
+    def _get_session_app_id(self, session) -> tuple[str, str, int | None, str | None]:
         proc = session.Process
         if proc is None:
-            return self.SYSTEM_SOUNDS_ID, "Sons do Sistema", None
+            return self.SYSTEM_SOUNDS_ID, "Sons do Sistema", None, None
         try:
             raw_name = proc.name()
             pid = proc.pid
-            return raw_name.lower(), format_app_name(raw_name), pid
+            try:
+                exe_path = proc.exe()
+            except Exception:
+                exe_path = None
+            return raw_name.lower(), format_app_name(raw_name), pid, exe_path
         except Exception:
-            return self.SYSTEM_SOUNDS_ID, "Sons do Sistema", None
+            return self.SYSTEM_SOUNDS_ID, "Sons do Sistema", None, None
 
     def list_app_sessions(self) -> List[AppAudioSession]:
         grouped: Dict[str, AppAudioSession] = {}
@@ -456,7 +461,7 @@ class WindowsAudioBackend(AudioBackend):
             if simple_vol is None:
                 continue
 
-            app_id, display_name, pid = self._get_session_app_id(session)
+            app_id, display_name, pid, exe_path = self._get_session_app_id(session)
             try:
                 vol = clamp_volume(simple_vol.GetMasterVolume())
                 muted = bool(simple_vol.GetMute())
@@ -481,10 +486,13 @@ class WindowsAudioBackend(AudioBackend):
                     muted=muted,
                     pids=[pid] if pid is not None else [],
                     peak_level=peak,
+                    exe_path=exe_path,
                 )
             else:
                 if pid is not None and pid not in grouped[app_id].pids:
                     grouped[app_id].pids.append(pid)
+                if exe_path and not grouped[app_id].exe_path:
+                    grouped[app_id].exe_path = exe_path
                 if peak > grouped[app_id].peak_level:
                     grouped[app_id].peak_level = peak
 
