@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -998,7 +999,8 @@ class MixersApp(ctk.CTk):
     ) -> None:
         if error:
             if manual:
-                self._set_status("Não foi possível verificar atualizações agora.")
+                short_err = self._truncate(error.replace("\n", " "), 42)
+                self._set_status(f"Erro ao verificar: {short_err}")
             return
 
         if info is not None:
@@ -1040,10 +1042,20 @@ class MixersApp(ctk.CTk):
             return
         if should_quit:
             self._set_status("Reiniciando para concluir a atualização...")
-            self.after(200, self.quit_app)
+            self.after(200, self._exit_for_update)
         else:
             self.update_now_btn.configure(state="normal", text="Abrir")
             self._set_status("Página de download aberta no navegador.")
+
+    def _exit_for_update(self) -> None:
+        self._stop_live_loops()
+        if self.tray is not None:
+            self.tray.stop()
+        try:
+            self.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     # ------------------------------------------------------------------
     # Helpers
