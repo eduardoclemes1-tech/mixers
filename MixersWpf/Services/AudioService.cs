@@ -20,7 +20,9 @@ public sealed class AppSessionInfo
     public float Volume { get; set; }
     public bool Muted { get; set; }
     public float PeakLevel { get; set; }
+    public bool IsActive { get; set; }
     public bool IsSystemSounds { get; init; }
+    public List<string> SessionInstanceIds { get; } = new();
 }
 
 public sealed class OutputDeviceInfo
@@ -71,12 +73,59 @@ public sealed class AudioService : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
 
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern uint QueryDosDevice(string lpDeviceName, StringBuilder lpTargetPath, uint ucchMax);
+
     [DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
     public const byte VkMediaNextTrack = 0xB0;
     public const byte VkMediaPrevTrack = 0xB1;
     public const byte VkMediaPlayPause = 0xB3;
+
+    public event Action? SessionsChanged;
+    public event Action? DevicesChanged;
+
+    private sealed class RenderEndpointEntry : IDisposable
+    {
+        public required string DeviceId { get; init; }
+        public required MMDevice Device { get; init; }
+        public required AudioSessionManager Manager { get; init; }
+        public bool IsDefault { get; init; }
+        public AudioSessionManager.SessionCreatedDelegate? SessionCreatedHandler { get; set; }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (SessionCreatedHandler != null)
+                {
+                    Manager.OnSessionCreated -= SessionCreatedHandler;
+                    SessionCreatedHandler = null;
+                }
+            }
+            catch { }
+            try { Manager.Dispose(); } catch { }
+            try { Device.Dispose(); } catch { }
+        }
+    }
+
+    private sealed class EndpointNotificationClient : IMMNotificationClient
+    {
+        private readonly Action _onChanged;
+
+        public EndpointNotificationClient(Action onChanged) => _onChanged = onChanged;
+
+        public void OnDeviceStateChanged(string deviceId, DeviceState newState) => _onChanged();
+        public void OnDeviceAdded(string pwstrDeviceId) => _onChanged();
+        public void OnDeviceRemoved(string deviceId) => _onChanged();
+        public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+        {
+            if (flow == DataFlow.Render || flow == DataFlow.Capture)
+                _onChanged();
+        }
+        public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+    }
 
     public static void SendMediaKey(byte vk)
     {
@@ -90,14 +139,247 @@ public sealed class AudioService : IDisposable
         }
     }
 
+    private static readonly Dictionary<string, string> DevicePrefixToDriveMap = BuildDevicePrefixMap();
+
+    private static Dictionary<string, string> BuildDevicePrefixMap()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var sb = new StringBuilder(512);
+            foreach (string drive in Directory.GetLogicalDrives())
+            {
+                string dosName = drive.TrimEnd('\\');
+                sb.Clear();
+                if (QueryDosDevice(dosName, sb, (uint)sb.Capacity) > 0)
+                {
+                    string ntPrefix = sb.ToString();
+                    if (!string.IsNullOrEmpty(ntPrefix))
+                        map[ntPrefix] = dosName;
+                }
+            }
+        }
+        catch
+        {
+        }
+        return map;
+    }
+
+    private static string? ConvertNtPathToDosPath(string? ntPath)
+    {
+        if (string.IsNullOrWhiteSpace(ntPath)) return null;
+        if (ntPath.Length >= 2 && ntPath[1] == ':') return ntPath;
+
+        foreach (var (ntPrefix, drive) in DevicePrefixToDriveMap)
+        {
+            if (ntPath.StartsWith(ntPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return drive + ntPath[ntPrefix.Length..];
+            }
+        }
+        return null;
+    }
+
+    private static (string? ExePath, string? RawName) ParseSessionIdentifier(string? sessionId)
+    {
+        if (string.IsNullOrWhiteSpace(sessionId)) return (null, null);
+
+        // Formato WASAPI típico:
+        // {endpoint}|\Device\HarddiskVolume3\...\App.exe%b{guid}
+        // ou UWP: {endpoint}|#...!<AppId>%b{guid}
+        int pipeIdx = sessionId.IndexOf('|');
+        if (pipeIdx < 0 || pipeIdx + 1 >= sessionId.Length) return (null, null);
+
+        string payload = sessionId[(pipeIdx + 1)..];
+        int pctIdx = payload.IndexOf("%b", StringComparison.OrdinalIgnoreCase);
+        if (pctIdx >= 0) payload = payload[..pctIdx];
+        payload = payload.Trim();
+
+        if (string.IsNullOrEmpty(payload) || payload == "#") return (null, null);
+
+        // Caminho de executável NT (\Device\HarddiskVolumeX\...\app.exe) ou DOS (C:\...\app.exe)
+        if (payload.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || payload.Contains('\\'))
+        {
+            string? dosPath = ConvertNtPathToDosPath(payload);
+            string candidate = dosPath ?? payload;
+            try
+            {
+                string fileName = Path.GetFileNameWithoutExtension(candidate);
+                if (!string.IsNullOrWhiteSpace(fileName))
+                    return (dosPath, fileName);
+            }
+            catch
+            {
+            }
+        }
+
+        // Fallback UWP/Store (#...\PackageFamilyName!App)
+        int bangIdx = payload.LastIndexOf('!');
+        if (bangIdx > 0)
+        {
+            string pkgPart = payload[..bangIdx];
+            int slash = Math.Max(pkgPart.LastIndexOf('\\'), pkgPart.LastIndexOf('/'));
+            if (slash >= 0 && slash + 1 < pkgPart.Length) pkgPart = pkgPart[(slash + 1)..];
+            pkgPart = pkgPart.TrimStart('#');
+            int under = pkgPart.IndexOf('_');
+            if (under > 0) pkgPart = pkgPart[..under];
+            int dot = pkgPart.LastIndexOf('.');
+            if (dot >= 0 && dot + 1 < pkgPart.Length) pkgPart = pkgPart[(dot + 1)..];
+            if (!string.IsNullOrWhiteSpace(pkgPart))
+                return (null, pkgPart);
+        }
+
+        return (null, null);
+    }
+
+    private static string? GetProcessExePathSafe(uint pid)
+    {
+        IntPtr hProc = OpenProcess(ProcessQueryLimitedInformation, false, pid);
+        if (hProc == IntPtr.Zero) return null;
+        try
+        {
+            var sb = new StringBuilder(1024);
+            uint size = (uint)sb.Capacity;
+            if (QueryFullProcessImageName(hProc, 0, sb, ref size) && size > 0)
+            {
+                return sb.ToString();
+            }
+        }
+        catch
+        {
+        }
+        finally
+        {
+            CloseHandle(hProc);
+        }
+        return null;
+    }
+
+    private readonly MMDeviceEnumerator _enumerator = new();
+    private readonly EndpointNotificationClient _notificationClient;
+    private readonly List<RenderEndpointEntry> _renderEndpoints = new();
+    private MMDevice? _defaultOutput;
+    private string _defaultOutputId = "";
+    private volatile bool _endpointsDirty = true;
+
+    private readonly Dictionary<string, List<AudioSessionControl>> _sessionCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(uint Pid, string SessionId), (string AppId, string DisplayName, string? ExePath)> _sessionMetaCache = new();
+    private readonly Dictionary<string, MMDevice> _micCache = new(StringComparer.OrdinalIgnoreCase);
+    private WasapiCapture? _micTestCapture;
+
+    public bool IsMicTesting => _micTestCapture != null;
+
+    public AudioService()
+    {
+        _notificationClient = new EndpointNotificationClient(() =>
+        {
+            _endpointsDirty = true;
+            DevicesChanged?.Invoke();
+        });
+        try
+        {
+            _enumerator.RegisterEndpointNotificationCallback(_notificationClient);
+        }
+        catch
+        {
+        }
+        RebuildRenderEndpoints();
+    }
+
+    public void MarkEndpointsDirty()
+    {
+        _endpointsDirty = true;
+    }
+
+    private void RebuildRenderEndpoints()
+    {
+        _endpointsDirty = false;
+        DisposeSessionCache();
+
+        foreach (var ep in _renderEndpoints)
+        {
+            ep.Dispose();
+        }
+        _renderEndpoints.Clear();
+        _defaultOutput = null;
+        _defaultOutputId = "";
+
+        try
+        {
+            using var def = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            _defaultOutputId = def?.ID ?? "";
+        }
+        catch
+        {
+            _defaultOutputId = "";
+        }
+
+        try
+        {
+            var devices = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var dev in devices)
+            {
+                bool isDefault = string.Equals(dev.ID, _defaultOutputId, StringComparison.OrdinalIgnoreCase);
+                try
+                {
+                    var mgr = dev.AudioSessionManager;
+                    AudioSessionManager.SessionCreatedDelegate handler = (_, _) => SessionsChanged?.Invoke();
+                    try
+                    {
+                        mgr.OnSessionCreated += handler;
+                    }
+                    catch
+                    {
+                        handler = null!;
+                    }
+
+                    var entry = new RenderEndpointEntry
+                    {
+                        DeviceId = dev.ID,
+                        Device = dev,
+                        Manager = mgr,
+                        IsDefault = isDefault,
+                        SessionCreatedHandler = handler
+                    };
+                    _renderEndpoints.Add(entry);
+                    if (isDefault)
+                    {
+                        _defaultOutput = dev;
+                    }
+                }
+                catch
+                {
+                    try { dev.Dispose(); } catch { }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        if (_defaultOutput == null && _renderEndpoints.Count > 0)
+        {
+            _defaultOutput = _renderEndpoints[0].Device;
+            _defaultOutputId = _renderEndpoints[0].DeviceId;
+        }
+    }
+
+    private void EnsureEndpointsReady()
+    {
+        if (_endpointsDirty || _renderEndpoints.Count == 0 || _defaultOutput == null)
+        {
+            RebuildRenderEndpoints();
+        }
+    }
+
     public List<OutputDeviceInfo> ListOutputDevices()
     {
         var list = new List<OutputDeviceInfo>();
         string defaultId = "";
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
-            defaultId = _defaultOutput?.ID ?? "";
+            using var def = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            defaultId = def?.ID ?? "";
             var devices = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
             foreach (var dev in devices)
             {
@@ -135,7 +417,7 @@ public sealed class AudioService : IDisposable
             policy.SetDefaultEndpoint(deviceId, 0); // eConsole
             policy.SetDefaultEndpoint(deviceId, 1); // eMultimedia
             policy.SetDefaultEndpoint(deviceId, 2); // eCommunications
-            RefreshDefaultOutput();
+            RebuildRenderEndpoints();
             return true;
         }
         catch
@@ -181,65 +463,16 @@ public sealed class AudioService : IDisposable
         return true;
     }
 
-    private static string? GetProcessExePathSafe(uint pid)
-    {
-        IntPtr hProc = OpenProcess(ProcessQueryLimitedInformation, false, pid);
-        if (hProc == IntPtr.Zero) return null;
-        try
-        {
-            var sb = new StringBuilder(1024);
-            uint size = (uint)sb.Capacity;
-            if (QueryFullProcessImageName(hProc, 0, sb, ref size) && size > 0)
-            {
-                return sb.ToString();
-            }
-        }
-        catch
-        {
-        }
-        finally
-        {
-            CloseHandle(hProc);
-        }
-        return null;
-    }
-
-    private readonly MMDeviceEnumerator _enumerator = new();
-    private MMDevice? _defaultOutput;
-    private readonly Dictionary<string, List<AudioSessionControl>> _sessionCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<uint, (string AppId, string DisplayName, string? ExePath)> _pidMetaCache = new();
-    private readonly Dictionary<string, MMDevice> _micCache = new(StringComparer.OrdinalIgnoreCase);
-    private WasapiCapture? _micTestCapture;
-
-    public bool IsMicTesting => _micTestCapture != null;
-
-    public AudioService()
-    {
-        RefreshDefaultOutput();
-    }
-
-    private void RefreshDefaultOutput()
-    {
-        try
-        {
-            _defaultOutput?.Dispose();
-            _defaultOutput = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        }
-        catch
-        {
-            _defaultOutput = null;
-        }
-    }
-
     public string GetOutputDeviceName()
     {
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
+            EnsureEndpointsReady();
             return _defaultOutput?.FriendlyName ?? "Saída Padrão";
         }
         catch
         {
+            _endpointsDirty = true;
             return "Saída Padrão";
         }
     }
@@ -248,12 +481,12 @@ public sealed class AudioService : IDisposable
     {
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
+            EnsureEndpointsReady();
             return Math.Clamp(_defaultOutput?.AudioEndpointVolume.MasterVolumeLevelScalar ?? 1f, 0f, 1f);
         }
         catch
         {
-            RefreshDefaultOutput();
+            RebuildRenderEndpoints();
             return Math.Clamp(_defaultOutput?.AudioEndpointVolume.MasterVolumeLevelScalar ?? 1f, 0f, 1f);
         }
     }
@@ -263,12 +496,12 @@ public sealed class AudioService : IDisposable
         float v = Math.Clamp(volume, 0f, 1f);
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
+            EnsureEndpointsReady();
             if (_defaultOutput != null) _defaultOutput.AudioEndpointVolume.MasterVolumeLevelScalar = v;
         }
         catch
         {
-            RefreshDefaultOutput();
+            RebuildRenderEndpoints();
             if (_defaultOutput != null) _defaultOutput.AudioEndpointVolume.MasterVolumeLevelScalar = v;
         }
     }
@@ -277,12 +510,12 @@ public sealed class AudioService : IDisposable
     {
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
+            EnsureEndpointsReady();
             return _defaultOutput?.AudioEndpointVolume.Mute ?? false;
         }
         catch
         {
-            RefreshDefaultOutput();
+            RebuildRenderEndpoints();
             return _defaultOutput?.AudioEndpointVolume.Mute ?? false;
         }
     }
@@ -291,12 +524,12 @@ public sealed class AudioService : IDisposable
     {
         try
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
+            EnsureEndpointsReady();
             if (_defaultOutput != null) _defaultOutput.AudioEndpointVolume.Mute = muted;
         }
         catch
         {
-            RefreshDefaultOutput();
+            RebuildRenderEndpoints();
             if (_defaultOutput != null) _defaultOutput.AudioEndpointVolume.Mute = muted;
         }
     }
@@ -316,96 +549,94 @@ public sealed class AudioService : IDisposable
 
     public List<AppSessionInfo> RefreshAppSessions()
     {
+        EnsureEndpointsReady();
+
         var grouped = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
+        var groupPriority = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var newCache = new Dictionary<string, List<AudioSessionControl>>(StringComparer.OrdinalIgnoreCase);
 
-        try
+        foreach (var endpoint in _renderEndpoints)
         {
-            if (_defaultOutput == null) RefreshDefaultOutput();
-            var sessions = _defaultOutput?.AudioSessionManager.Sessions;
-            if (sessions != null)
+            try
             {
+                // CRÍTICO: NAudio mantém cache estático em AudioSessionManager.Sessions.
+                // Sem RefreshSessions(), nenhum app novo aberto depois do início aparece!
+                endpoint.Manager.RefreshSessions();
+                var sessions = endpoint.Manager.Sessions;
+                if (sessions == null) continue;
+
                 for (int i = 0; i < sessions.Count; i++)
                 {
                     AudioSessionControl s;
+                    AudioSessionState state;
                     try
                     {
                         s = sessions[i];
-                        if (s.State == AudioSessionState.AudioSessionStateExpired) continue;
+                        state = s.State;
+                        if (state == AudioSessionState.AudioSessionStateExpired)
+                        {
+                            try { s.Dispose(); } catch { }
+                            continue;
+                        }
                     }
                     catch
                     {
                         continue;
                     }
 
-                    bool isSys = s.IsSystemSoundsSession;
+                    bool isSys = false;
+                    uint pid = 0;
+                    string sessionId = "";
+                    string instanceId = "";
+                    string? sessionDisplayName = null;
+                    string? iconPath = null;
+
+                    try { isSys = s.IsSystemSoundsSession; } catch { }
+                    try { pid = s.GetProcessID; } catch { }
+                    try { sessionId = s.GetSessionIdentifier ?? ""; } catch { }
+                    try { instanceId = s.GetSessionInstanceIdentifier ?? ""; } catch { }
+                    try { sessionDisplayName = s.DisplayName; } catch { }
+                    try { iconPath = s.IconPath; } catch { }
+
+                    if (string.IsNullOrEmpty(instanceId))
+                        instanceId = $"{endpoint.DeviceId}|{pid}|{sessionId}|{i}";
+
                     string appId;
                     string displayName;
                     string? exePath = null;
-                    string? iconPath = null;
-                    try
-                    {
-                        iconPath = s.IconPath;
-                    }
-                    catch
-                    {
-                    }
 
-                    if (isSys)
+                    if (isSys || pid == 0)
                     {
+                        // Sons do Sistema: controla apenas o endpoint padrão para evitar duplicação
+                        if (!endpoint.IsDefault)
+                        {
+                            try { s.Dispose(); } catch { }
+                            continue;
+                        }
+                        isSys = true;
                         appId = SystemSoundsId;
                         displayName = "Sons do Sistema";
                     }
                     else
                     {
-                        uint pid = s.GetProcessID;
-                        if (pid == 0)
+                        var metaKey = (pid, sessionId);
+                        if (_sessionMetaCache.TryGetValue(metaKey, out var cachedMeta))
                         {
-                            appId = SystemSoundsId;
-                            displayName = "Sons do Sistema";
-                            isSys = true;
+                            appId = cachedMeta.AppId;
+                            displayName = cachedMeta.DisplayName;
+                            exePath = cachedMeta.ExePath;
                         }
                         else
                         {
-                            if (_pidMetaCache.TryGetValue(pid, out var cachedMeta))
-                            {
-                                appId = cachedMeta.AppId;
-                                displayName = cachedMeta.DisplayName;
-                                exePath = cachedMeta.ExePath;
-                            }
-                            else
-                            {
-                                exePath = GetProcessExePathSafe(pid);
-                                string? rawName = null;
-                                if (!string.IsNullOrEmpty(exePath))
-                                {
-                                    rawName = Path.GetFileNameWithoutExtension(exePath);
-                                }
-                                else
-                                {
-                                    try
-                                    {
-                                        using var proc = Process.GetProcessById((int)pid);
-                                        rawName = proc.ProcessName;
-                                        try { exePath = proc.MainModule?.FileName; } catch { }
-                                    }
-                                    catch
-                                    {
-                                        continue;
-                                    }
-                                }
-
-                                if (string.IsNullOrWhiteSpace(rawName)) continue;
-                                appId = rawName.ToLowerInvariant();
-                                displayName = FormatAppName(rawName);
-                                _pidMetaCache[pid] = (appId, displayName, exePath);
-                            }
+                            (appId, displayName, exePath) = ResolveAppMetadata(pid, sessionId, sessionDisplayName);
+                            _sessionMetaCache[metaKey] = (appId, displayName, exePath);
                         }
                     }
 
                     float vol;
                     bool muted;
                     float peak = 0f;
+                    bool isActive = state == AudioSessionState.AudioSessionStateActive;
                     try
                     {
                         vol = Math.Clamp(s.SimpleAudioVolume.Volume, 0f, 1f);
@@ -414,6 +645,7 @@ public sealed class AudioService : IDisposable
                     }
                     catch
                     {
+                        try { s.Dispose(); } catch { }
                         continue;
                     }
 
@@ -424,9 +656,12 @@ public sealed class AudioService : IDisposable
                     }
                     list.Add(s);
 
+                    // Prioridade para escolher qual sessão representa Volume/Mute na UI quando um app tem várias sessões
+                    int priority = (isActive ? 4 : 0) + (peak > 0.005f ? 2 : 0) + (endpoint.IsDefault ? 1 : 0);
+
                     if (!grouped.TryGetValue(appId, out var info))
                     {
-                        grouped[appId] = new AppSessionInfo
+                        info = new AppSessionInfo
                         {
                             AppId = appId,
                             DisplayName = displayName,
@@ -435,26 +670,115 @@ public sealed class AudioService : IDisposable
                             Volume = vol,
                             Muted = muted,
                             PeakLevel = peak,
+                            IsActive = isActive,
                             IsSystemSounds = isSys
                         };
+                        info.SessionInstanceIds.Add(instanceId);
+                        grouped[appId] = info;
+                        groupPriority[appId] = priority;
                     }
                     else
                     {
+                        info.SessionInstanceIds.Add(instanceId);
+                        info.IsActive |= isActive;
                         if (string.IsNullOrEmpty(info.ExePath) && !string.IsNullOrEmpty(exePath))
                             info.ExePath = exePath;
                         if (string.IsNullOrEmpty(info.IconPath) && !string.IsNullOrEmpty(iconPath))
                             info.IconPath = iconPath;
                         if (peak > info.PeakLevel)
                             info.PeakLevel = peak;
+
+                        if (priority > groupPriority[appId])
+                        {
+                            groupPriority[appId] = priority;
+                            info.Volume = vol;
+                            info.Muted = muted;
+                        }
                     }
                 }
             }
-        }
-        catch
-        {
-            RefreshDefaultOutput();
+            catch
+            {
+                _endpointsDirty = true;
+            }
         }
 
+        DisposeSessionCache();
+        foreach (var kv in newCache) _sessionCache[kv.Key] = kv.Value;
+        if (_sessionMetaCache.Count > 256) _sessionMetaCache.Clear();
+
+        return grouped.Values
+            .OrderBy(a => !a.IsSystemSounds)
+            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static (string AppId, string DisplayName, string? ExePath) ResolveAppMetadata(
+        uint pid,
+        string sessionId,
+        string? sessionDisplayName)
+    {
+        string? exePath = GetProcessExePathSafe(pid);
+        string? rawName = null;
+
+        if (!string.IsNullOrEmpty(exePath))
+        {
+            rawName = Path.GetFileNameWithoutExtension(exePath);
+        }
+
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            try
+            {
+                using var proc = Process.GetProcessById((int)pid);
+                rawName = proc.ProcessName;
+                if (string.IsNullOrEmpty(exePath))
+                {
+                    try { exePath = proc.MainModule?.FileName; } catch { }
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        // Fallback essencial para jogos com anti-cheat (Vanguard/EAC) e apps elevados como Administrador:
+        // o identificador WASAPI contém o caminho do executável mesmo quando OpenProcess retorna ACCESS_DENIED.
+        if (string.IsNullOrWhiteSpace(rawName) || string.IsNullOrEmpty(exePath))
+        {
+            var (parsedExe, parsedName) = ParseSessionIdentifier(sessionId);
+            if (string.IsNullOrEmpty(exePath) && !string.IsNullOrEmpty(parsedExe))
+                exePath = parsedExe;
+            if (string.IsNullOrWhiteSpace(rawName) && !string.IsNullOrWhiteSpace(parsedName))
+                rawName = parsedName;
+        }
+
+        string? cleanSessionName = !string.IsNullOrWhiteSpace(sessionDisplayName) && !sessionDisplayName.TrimStart().StartsWith("@")
+            ? sessionDisplayName.Trim()
+            : null;
+
+        if (string.IsNullOrWhiteSpace(rawName))
+        {
+            if (!string.IsNullOrEmpty(cleanSessionName))
+                return (cleanSessionName.ToLowerInvariant(), cleanSessionName, exePath);
+            return ($"pid_{pid}", $"Aplicativo ({pid})", exePath);
+        }
+
+        string appId = rawName.ToLowerInvariant();
+        string displayName = FormatAppName(rawName);
+
+        // Para apps UWP / hospedados (ex: ApplicationFrameHost / WWAHost), prefira o DisplayName legível da sessão
+        if (!string.IsNullOrEmpty(cleanSessionName) &&
+            (appId is "applicationframehost" or "wwahost" or "backgroundtaskhost" or "runtimebroker"))
+        {
+            displayName = cleanSessionName;
+        }
+
+        return (appId, displayName, exePath);
+    }
+
+    private void DisposeSessionCache()
+    {
         foreach (var oldList in _sessionCache.Values)
         {
             foreach (var oldCtrl in oldList)
@@ -463,13 +787,6 @@ public sealed class AudioService : IDisposable
             }
         }
         _sessionCache.Clear();
-        foreach (var kv in newCache) _sessionCache[kv.Key] = kv.Value;
-        if (_pidMetaCache.Count > 128) _pidMetaCache.Clear();
-
-        return grouped.Values
-            .OrderBy(a => !a.IsSystemSounds)
-            .ThenBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
     }
 
     public Dictionary<string, float> GetAppPeaks()
@@ -666,12 +983,25 @@ public sealed class AudioService : IDisposable
     public void Dispose()
     {
         StopMicTest();
+        try
+        {
+            _enumerator.UnregisterEndpointNotificationCallback(_notificationClient);
+        }
+        catch
+        {
+        }
+        DisposeSessionCache();
+        foreach (var ep in _renderEndpoints)
+        {
+            ep.Dispose();
+        }
+        _renderEndpoints.Clear();
+        _defaultOutput = null;
         foreach (var dev in _micCache.Values)
         {
             try { dev.Dispose(); } catch { }
         }
         _micCache.Clear();
-        _defaultOutput?.Dispose();
         _enumerator.Dispose();
     }
 }

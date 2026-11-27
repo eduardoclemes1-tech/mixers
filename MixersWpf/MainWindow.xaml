@@ -197,7 +197,8 @@
 
                 <!-- Lista limpa de Aplicativos -->
                 <Border x:Name="AppsListBand" Grid.Row="3">
-                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                    <ScrollViewer x:Name="AppsScrollViewer"
+                                  VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled"
                                   Padding="0,4,0,4">
                         <StackPanel x:Name="AppsPanel"/>
@@ -240,7 +241,7 @@
                 </Border>
 
                 <Border x:Name="MicsListBand" Grid.Row="5" MaxHeight="138" Padding="0,3,0,6">
-                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
                                   HorizontalScrollBarVisibility="Disabled">
                         <StackPanel x:Name="MicsPanel"/>
                     </ScrollViewer>

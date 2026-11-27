@@ -18,7 +18,7 @@ public partial class MainWindow : Window
 {
     private const double BaseWindowWidth = 356;
     private const double MinWindowHeight = 396;
-    private const double MaxWindowHeight = 570;
+    private const double MaxWindowHeight = 660;
 
     private static readonly SolidColorBrush PrimaryTextBrush = CreateFrozenBrush(Color.FromRgb(244, 244, 248));
     private static readonly SolidColorBrush MutedTextBrush = CreateFrozenBrush(Color.FromRgb(130, 125, 152));
@@ -53,13 +53,17 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer _meterTimer;
     private readonly DispatcherTimer _bgMonitorTimer;
     private readonly DispatcherTimer _settingsSaveTimer;
+    private readonly DispatcherTimer _realtimeRefreshTimer;
 
     private readonly Dictionary<string, AppRowWidgets> _appRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _seenApps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _seenSessionInstances = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _knownAppIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (float Volume, bool Muted)> _activeAppOverrides = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _lastAppActiveUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastCallSoundUtc = DateTime.MinValue;
+    private bool _pendingDevicesRebuild;
 
     private List<AppSessionInfo> _sessions = new();
     private List<MicrophoneInfo> _mics = new();
@@ -145,7 +149,7 @@ public partial class MainWindow : Window
             onQuit: () => Dispatcher.Invoke(QuitApplication),
             onTrayWheelDelta: step => Dispatcher.Invoke(() => OnTrayWheelVolume(step)));
 
-        _sessionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
+        _sessionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.8) };
         _sessionTimer.Tick += (_, _) =>
         {
             if (_isVisible && (DateTime.UtcNow - _lastSliderEdit).TotalMilliseconds > 600)
@@ -153,6 +157,36 @@ public partial class MainWindow : Window
                 RefreshAudioState(forceRebuild: false);
             }
         };
+
+        _realtimeRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(160) };
+        _realtimeRefreshTimer.Tick += (_, _) =>
+        {
+            _realtimeRefreshTimer.Stop();
+            if ((DateTime.UtcNow - _lastSliderEdit).TotalMilliseconds <= 350)
+            {
+                _realtimeRefreshTimer.Start();
+                return;
+            }
+
+            bool rebuildDevices = _pendingDevicesRebuild;
+            _pendingDevicesRebuild = false;
+            if (rebuildDevices)
+            {
+                _audio.MarkEndpointsDirty();
+            }
+
+            if (_isVisible)
+            {
+                RefreshAudioState(forceRebuild: rebuildDevices);
+            }
+            else
+            {
+                RunBackgroundAudioAutomations();
+            }
+        };
+
+        _audio.SessionsChanged += OnAudioSessionsChanged;
+        _audio.DevicesChanged += OnAudioDevicesChanged;
 
         _meterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(55) };
         _meterTimer.Tick += (_, _) =>
@@ -285,7 +319,7 @@ public partial class MainWindow : Window
         if (UpdateBanner.Visibility == Visibility.Visible) h += 36;
 
         int appCount = Math.Max(1, _sessions.Count);
-        h += Math.Min(appCount, 5) * 44 + 10;
+        h += Math.Min(appCount, 7) * 44 + 10;
 
         h += 38;
         if (_settings.Settings.MicsExpanded)
@@ -308,6 +342,7 @@ public partial class MainWindow : Window
         _isVisible = true;
         CloseOutputDevicesPanel();
         SwitchToMixerView(instant: true);
+        RefreshAudioState(forceRebuild: false);
         PositionBottomRight();
 
         double targetAlpha = Math.Clamp(_settings.Settings.Alpha, 0.65, 1.0);
@@ -335,7 +370,6 @@ public partial class MainWindow : Window
             Activate();
         }
 
-        Dispatcher.BeginInvoke(DispatcherPriority.Background, () => RefreshAudioState(forceRebuild: false));
         _sessionTimer.Start();
         _meterTimer.Start();
     }
@@ -461,8 +495,89 @@ public partial class MainWindow : Window
     private void MediaNextBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaNextTrack);
 
     // ------------------------------------------------------------------
-    // Automações em segundo plano: Ícone Dinâmico + Modo Call + Lembrar Volume
+    // Notificações em tempo real (WASAPI) + Automações em segundo plano
     // ------------------------------------------------------------------
+    private void OnAudioSessionsChanged()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _realtimeRefreshTimer.Stop();
+            _realtimeRefreshTimer.Start();
+        });
+    }
+
+    private void OnAudioDevicesChanged()
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            _pendingDevicesRebuild = true;
+            _realtimeRefreshTimer.Stop();
+            _realtimeRefreshTimer.Start();
+        });
+    }
+
+    private void ApplySessionPolicies(List<AppSessionInfo> rawSessions)
+    {
+        var currentInstances = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in rawSessions)
+        {
+            currentApps.Add(s.AppId);
+            foreach (var inst in s.SessionInstanceIds)
+                currentInstances.Add(inst);
+        }
+
+        // Remove sessões/apps encerrados para que reabrir um app reaplique o volume salvo
+        _seenSessionInstances.IntersectWith(currentInstances);
+        _knownAppIds.IntersectWith(currentApps);
+        foreach (var staleApp in _activeAppOverrides.Keys.Where(k => !currentApps.Contains(k)).ToList())
+        {
+            _activeAppOverrides.Remove(staleApp);
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        foreach (var s in rawSessions)
+        {
+            if (s.PeakLevel > 0.005f) _lastAppActiveUtc[s.AppId] = nowUtc;
+
+            bool hasNewInstance = false;
+            foreach (var inst in s.SessionInstanceIds)
+            {
+                if (_seenSessionInstances.Add(inst))
+                    hasNewInstance = true;
+            }
+
+            if (!s.IsSystemSounds && hasNewInstance)
+            {
+                if (_duckedOriginalVolumes.ContainsKey(s.AppId))
+                {
+                    _audio.SetAppVolume(s.AppId, 0.20f);
+                    s.Volume = 0.20f;
+                }
+                else if (_knownAppIds.Contains(s.AppId) &&
+                         _activeAppOverrides.TryGetValue(s.AppId, out var activeOverride))
+                {
+                    // App já aberto criou uma nova sessão de áudio (ex: chamada no Discord ou nova aba)
+                    _audio.SetAppVolume(s.AppId, activeOverride.Volume);
+                    s.Volume = activeOverride.Volume;
+                    if (activeOverride.Muted)
+                    {
+                        _audio.SetAppMute(s.AppId, true);
+                        s.Muted = true;
+                    }
+                }
+                else if (_settings.Settings.RememberAppVolumes &&
+                         _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
+                {
+                    _audio.SetAppVolume(s.AppId, savedVol);
+                    s.Volume = savedVol;
+                }
+            }
+
+            _knownAppIds.Add(s.AppId);
+        }
+    }
+
     private void RunBackgroundAudioAutomations()
     {
         try
@@ -476,19 +591,10 @@ public partial class MainWindow : Window
 
             var sessions = _isVisible ? _sessions : _audio.RefreshAppSessions();
 
-            // 1. Lembrar volume preferido para apps recém-abertos
-            if (_settings.Settings.RememberAppVolumes)
+            // 1. Lembrar volume preferido e sincronizar novas sessões de apps recém-abertos
+            if (!_isVisible)
             {
-                foreach (var s in sessions)
-                {
-                    if (s.IsSystemSounds) continue;
-                    if (_seenApps.Add(s.AppId) &&
-                        _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
-                    {
-                        _audio.SetAppVolume(s.AppId, savedVol);
-                        s.Volume = savedVol;
-                    }
-                }
+                ApplySessionPolicies(sessions);
             }
 
             // 2. Modo Call automático (abaixa música/navegador durante chamadas)
@@ -645,20 +751,8 @@ public partial class MainWindow : Window
 
         var rawSessions = _audio.RefreshAppSessions();
 
-        // Aplica volume salvo automaticamente se um app novo apareceu + marca atividade
-        foreach (var s in rawSessions)
-        {
-            if (s.PeakLevel > 0.005f) _lastAppActiveUtc[s.AppId] = DateTime.UtcNow;
-            if (!s.IsSystemSounds && _settings.Settings.RememberAppVolumes)
-            {
-                if (_seenApps.Add(s.AppId) &&
-                    _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
-                {
-                    _audio.SetAppVolume(s.AppId, savedVol);
-                    s.Volume = savedVol;
-                }
-            }
-        }
+        // Aplica volume salvo automaticamente se um app/sessão nova apareceu + marca atividade
+        ApplySessionPolicies(rawSessions);
 
         // Filtra ocultos, aplica modo "só tocando agora" e ordena fixados no topo
         var nowUtc = DateTime.UtcNow;
@@ -667,6 +761,7 @@ public partial class MainWindow : Window
             .Where(s =>
                 !_settings.Settings.OnlyActiveApps ||
                 _settings.Settings.PinnedApps.Contains(s.AppId) ||
+                s.IsActive ||
                 s.PeakLevel > 0.005f ||
                 (_lastAppActiveUtc.TryGetValue(s.AppId, out var t) && (nowUtc - t).TotalSeconds < 6.0))
             .OrderByDescending(s => _settings.Settings.PinnedApps.Contains(s.AppId))
@@ -709,9 +804,11 @@ public partial class MainWindow : Window
         MasterSlider.SetPeak(_audio.GetMasterPeak(), Colors.White);
 
         var appPeaks = _audio.GetAppPeaks();
+        var nowUtc = DateTime.UtcNow;
         foreach (var (appId, row) in _appRows)
         {
             float p = row.Session.Muted ? 0f : appPeaks.GetValueOrDefault(appId, 0f);
+            if (p > 0.005f) _lastAppActiveUtc[appId] = nowUtc;
             row.Slider.SetPeak(p, Colors.White);
         }
 
@@ -836,6 +933,15 @@ public partial class MainWindow : Window
         {
             _audio.SetAppMute(appId, false);
             _audio.SetAppVolume(appId, 1f);
+            if (!session.IsSystemSounds)
+            {
+                _activeAppOverrides[appId] = (1f, false);
+                if (_settings.Settings.RememberAppVolumes)
+                {
+                    _settings.Settings.SavedAppVolumes[appId] = 1f;
+                    ScheduleSaveSettings();
+                }
+            }
             RefreshAudioState(forceRebuild: false);
         };
         menu.Items.Add(resetItem);
@@ -1083,10 +1189,14 @@ public partial class MainWindow : Window
             row.LastVolumePct = pct;
             row.PercentText.Text = pct.ToString();
             row.Session.Volume = scalar;
-            if (!row.Session.IsSystemSounds && _settings.Settings.RememberAppVolumes)
+            if (!row.Session.IsSystemSounds)
             {
-                _settings.Settings.SavedAppVolumes[appId] = scalar;
-                ScheduleSaveSettings();
+                _activeAppOverrides[appId] = (scalar, row.Session.Muted);
+                if (_settings.Settings.RememberAppVolumes)
+                {
+                    _settings.Settings.SavedAppVolumes[appId] = scalar;
+                    ScheduleSaveSettings();
+                }
             }
         }
         _audio.SetAppVolume(appId, scalar);
@@ -1099,6 +1209,10 @@ public partial class MainWindow : Window
         _audio.SetAppMute(appId, newState);
         row.Session.Muted = newState;
         row.LastMuted = newState;
+        if (!row.Session.IsSystemSounds)
+        {
+            _activeAppOverrides[appId] = (row.Session.Volume, newState);
+        }
         row.Slider.IsMuted = newState;
         row.PercentText.Foreground = newState ? MutedTextBrush : PrimaryTextBrush;
         row.IconBtn.Content = CreateAppIconContent(row.Session);
@@ -1564,6 +1678,9 @@ public partial class MainWindow : Window
     {
         SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged -= OnSystemUserPreferenceChanged;
+        _audio.SessionsChanged -= OnAudioSessionsChanged;
+        _audio.DevicesChanged -= OnAudioDevicesChanged;
+        _realtimeRefreshTimer.Stop();
         _settingsSaveTimer.Stop();
         _bgMonitorTimer.Stop();
         _sessionTimer.Stop();
