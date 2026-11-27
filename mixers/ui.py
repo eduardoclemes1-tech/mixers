@@ -1,4 +1,4 @@
-"""Interface clean, rápida, animada, transparente e fixa no canto inferior direito (Windows 11)."""
+"""Interface repaginada: fundo transparente, cards flutuantes discretos e controles 100% nítidos."""
 
 from __future__ import annotations
 
@@ -31,24 +31,30 @@ from mixers.windows_integration import (
     set_autostart,
 )
 
-# Paleta clean escura translúcida
-BG_SURFACE = "#0E1117"
-CARD_SURFACE = "#161B26"
-CARD_BORDER = "#242C3D"
+# Cor-chave escura para transparência real do fundo no Windows (sem halo claro nas bordas)
+CHROMA_KEY = "#010203"
+SOLID_BG = "#0B0E14"
+
+# Paleta clean e discreta (controles 100% nítidos)
+CARD_SURFACE = "#121722"
+CARD_INNER = "#0D111A"
+CARD_BORDER = "#263044"
+PILL_BG = "#1A2233"
+PILL_HOVER = "#26324A"
 ACCENT = "#38BDF8"
 ACCENT_HOVER = "#0EA5E9"
 MIC_ACCENT = "#34D399"
 MUTED_BG = "#7F1D2D"
 MUTED_HOVER = "#991B1B"
-TEXT_PRIMARY = "#F1F5F9"
+TEXT_PRIMARY = "#F8FAFC"
 TEXT_SECONDARY = "#94A3B8"
 
 
 class MixersApp(ctk.CTk):
-    """Painel flutuante estilo nativo do Windows no canto inferior direito."""
+    """Painel flutuante clean com fundo transparente e controles nítidos no canto inferior direito."""
 
-    WINDOW_WIDTH = 382
-    WINDOW_HEIGHT = 590
+    WINDOW_WIDTH = 368
+    WINDOW_HEIGHT = 576
     SESSION_REFRESH_MS = 3000
     METER_REFRESH_MS = 160
     METER_EPSILON = 0.025
@@ -72,14 +78,19 @@ class MixersApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
-        self.title(f"Mixers v{__version__}")
-        self.configure(fg_color=BG_SURFACE)
-        self.resizable(False, False)
-
         # Preferências persistidas
-        self._alpha = max(0.65, min(1.0, float(self.settings.get("alpha", 0.91))))
+        self._transparent_bg = bool(self.settings.get("transparent_bg", True))
+        self._alpha = max(0.75, min(1.0, float(self.settings.get("alpha", 1.0))))
         self._mics_expanded = bool(self.settings.get("mics_expanded", True))
         saved_hotkey = str(self.settings.get("hotkey", "Ctrl+Alt+M"))
+
+        self._surface_bg = (
+            CHROMA_KEY if (self._transparent_bg and sys.platform == "win32") else SOLID_BG
+        )
+
+        self.title(f"Mixers v{__version__}")
+        self.configure(fg_color=self._surface_bg)
+        self.resizable(False, False)
 
         # Estado visual, animações e otimização
         self._pinned = False
@@ -111,10 +122,11 @@ class MixersApp(ctk.CTk):
         self._search_var.trace_add("write", lambda *_: self._render_app_list(force_rebuild=True))
         self._selected_profile = ctk.StringVar(value="Sem perfis salvos")
         self._autostart_var = ctk.BooleanVar(value=is_autostart_enabled())
+        self._transparent_bg_var = ctk.BooleanVar(value=self._transparent_bg)
         self._pending_update: UpdateInfo | None = None
         self._updating = False
 
-        # Estilo flyout nativo do Windows (sem ícone extra na barra de tarefas)
+        # Estilo flyout nativo do Windows (sem borda e sem ícone extra na barra de tarefas)
         if sys.platform == "win32":
             self.overrideredirect(True)
             try:
@@ -122,10 +134,7 @@ class MixersApp(ctk.CTk):
             except Exception:
                 pass
         self.attributes("-topmost", True)
-        try:
-            self.attributes("-alpha", self._alpha)
-        except Exception:
-            pass
+        self._apply_transparency_mode()
 
         self._build_layout()
         self._compute_and_set_position()
@@ -174,8 +183,36 @@ class MixersApp(ctk.CTk):
         self.after(3000, lambda: self.check_updates_async(manual=False))
 
     # ------------------------------------------------------------------
-    # Posicionamento fixo (padrão Windows + DPI) e animações suaves
+    # Transparência real do fundo + posicionamento fixo + animações
     # ------------------------------------------------------------------
+    def _apply_transparency_mode(self) -> None:
+        use_chroma = self._transparent_bg and sys.platform == "win32"
+        self._surface_bg = CHROMA_KEY if use_chroma else SOLID_BG
+
+        try:
+            self.configure(fg_color=self._surface_bg)
+        except Exception:
+            pass
+
+        if sys.platform == "win32":
+            try:
+                self.wm_attributes("-transparentcolor", CHROMA_KEY if use_chroma else "")
+            except Exception:
+                pass
+
+        try:
+            self.attributes("-alpha", self._alpha)
+        except Exception:
+            pass
+
+        if hasattr(self, "shell"):
+            self.shell.configure(
+                fg_color=self._surface_bg,
+                border_width=0 if use_chroma else 1,
+            )
+        if hasattr(self, "apps_scroll"):
+            self.apps_scroll.configure(fg_color=self._surface_bg)
+
     def _compute_and_set_position(self, y_offset: int = 0) -> None:
         self.update_idletasks()
         try:
@@ -191,11 +228,11 @@ class MixersApp(ctk.CTk):
         self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{y + y_offset}")
 
     def _animate_open(self) -> None:
-        """Animação sutil estilo Windows 11: desliza 16px para cima com fade-in (~130ms)."""
+        """Animação sutil estilo Windows 11: desliza 14px para cima com fade-in (~120ms)."""
         self._anim_token += 1
         token = self._anim_token
         steps = 8
-        slide_px = 16
+        slide_px = 14
         x, target_y = self._target_pos
 
         try:
@@ -208,7 +245,6 @@ class MixersApp(ctk.CTk):
             if token != self._anim_token or not self._is_visible:
                 return
             t = i / steps
-            # Ease-out cúbico suave
             eased = 1.0 - (1.0 - t) ** 3
             cur_y = int(round(target_y + slide_px * (1.0 - eased)))
             cur_alpha = round(self._alpha * eased, 3)
@@ -223,7 +259,7 @@ class MixersApp(ctk.CTk):
         _step(1)
 
     def _animate_close(self) -> None:
-        """Animação rápida e discreta ao recolher para a bandeja (~75ms)."""
+        """Animação rápida e discreta ao recolher para a bandeja (~70ms)."""
         self._anim_token += 1
         token = self._anim_token
         steps = 5
@@ -262,55 +298,63 @@ class MixersApp(ctk.CTk):
             pass
 
     # ------------------------------------------------------------------
-    # Layout Clean & Transparente
+    # Layout Repaginado: Cards Flutuantes Discretos sobre Fundo Transparente
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
+        use_chroma = self._transparent_bg and sys.platform == "win32"
+
         self.shell = ctk.CTkFrame(
             self,
-            fg_color=BG_SURFACE,
+            fg_color=self._surface_bg,
             border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=14,
+            border_width=0 if use_chroma else 1,
+            corner_radius=0 if use_chroma else 14,
         )
         self.shell.pack(fill="both", expand=True)
         self.shell.grid_columnconfigure(0, weight=1)
         self.shell.grid_rowconfigure(6, weight=1)
 
-        # Row 0: Cabeçalho compacto
-        header = ctk.CTkFrame(self.shell, fg_color="transparent")
-        header.grid(row=0, column=0, padx=14, pady=(12, 6), sticky="ew")
+        # Row 0: Cabeçalho flutuante minimalista
+        header = ctk.CTkFrame(
+            self.shell,
+            fg_color=CARD_SURFACE,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=12,
+        )
+        header.grid(row=0, column=0, padx=6, pady=(6, 4), sticky="ew")
         header.grid_columnconfigure(0, weight=1)
 
         title_row = ctk.CTkFrame(header, fg_color="transparent")
-        title_row.grid(row=0, column=0, sticky="w")
+        title_row.grid(row=0, column=0, padx=(12, 6), pady=7, sticky="w")
 
         ctk.CTkLabel(
             title_row,
             text="Mixers",
-            font=ctk.CTkFont(size=17, weight="bold"),
+            font=ctk.CTkFont(size=15, weight="bold"),
             text_color=TEXT_PRIMARY,
         ).pack(anchor="w")
 
         self.device_lbl = ctk.CTkLabel(
             title_row,
-            text=self._truncate(self.backend.get_output_device_name(), 30),
-            font=ctk.CTkFont(size=11),
+            text=self._truncate(self.backend.get_output_device_name(), 28),
+            font=ctk.CTkFont(size=10),
             text_color=TEXT_SECONDARY,
         )
         self.device_lbl.pack(anchor="w")
 
         btn_group = ctk.CTkFrame(header, fg_color="transparent")
-        btn_group.grid(row=0, column=1, sticky="e")
+        btn_group.grid(row=0, column=1, padx=(0, 8), pady=7, sticky="e")
 
         self.pin_btn = ctk.CTkButton(
             btn_group,
             text="Fixar",
-            width=46,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_SURFACE,
-            hover_color=CARD_BORDER,
+            width=44,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             text_color=TEXT_SECONDARY,
             command=self._toggle_pin,
         )
@@ -319,12 +363,12 @@ class MixersApp(ctk.CTk):
         self.settings_btn = ctk.CTkButton(
             btn_group,
             text="Ajustes",
-            width=54,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_SURFACE,
-            hover_color=CARD_BORDER,
+            width=52,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             text_color=TEXT_SECONDARY,
             command=self._toggle_settings_drawer,
         )
@@ -334,16 +378,16 @@ class MixersApp(ctk.CTk):
             btn_group,
             text="—",
             width=26,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=CARD_SURFACE,
-            hover_color=CARD_BORDER,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             text_color=TEXT_PRIMARY,
             command=self.hide_to_tray,
         ).pack(side="left")
 
-        # Row 1: Gaveta retrátil de Ajustes (Transparência, Atalho, Autostart, Perfis, Updates)
+        # Row 1: Gaveta retrátil de Ajustes
         self.settings_drawer = ctk.CTkFrame(
             self.shell,
             fg_color=CARD_SURFACE,
@@ -353,25 +397,38 @@ class MixersApp(ctk.CTk):
         )
         self.settings_drawer.grid_columnconfigure(1, weight=1)
 
+        self.transparent_bg_switch = ctk.CTkSwitch(
+            self.settings_drawer,
+            text="Fundo transparente (cards flutuantes)",
+            variable=self._transparent_bg_var,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            progress_color=ACCENT,
+            command=self._on_transparent_bg_switch,
+        )
+        self.transparent_bg_switch.grid(
+            row=0, column=0, columnspan=3, padx=12, pady=(10, 4), sticky="w"
+        )
+
         ctk.CTkLabel(
             self.settings_drawer,
-            text="Transparência",
-            font=ctk.CTkFont(size=12),
+            text="Opacidade cards",
+            font=ctk.CTkFont(size=11),
             text_color=TEXT_SECONDARY,
-        ).grid(row=0, column=0, padx=(12, 8), pady=(10, 4), sticky="w")
+        ).grid(row=1, column=0, padx=(12, 6), pady=(2, 4), sticky="w")
 
         self.alpha_slider = ctk.CTkSlider(
             self.settings_drawer,
-            from_=65,
+            from_=75,
             to=100,
-            number_of_steps=35,
+            number_of_steps=25,
+            height=14,
             progress_color=ACCENT,
             button_color=TEXT_PRIMARY,
             button_hover_color=ACCENT,
             command=self._on_alpha_change,
         )
         self.alpha_slider.set(int(round(self._alpha * 100)))
-        self.alpha_slider.grid(row=0, column=1, padx=6, pady=(10, 4), sticky="ew")
+        self.alpha_slider.grid(row=1, column=1, padx=4, pady=(2, 4), sticky="ew")
 
         self.alpha_lbl = ctk.CTkLabel(
             self.settings_drawer,
@@ -380,16 +437,16 @@ class MixersApp(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=TEXT_PRIMARY,
         )
-        self.alpha_lbl.grid(row=0, column=2, padx=(4, 12), pady=(10, 4))
+        self.alpha_lbl.grid(row=1, column=2, padx=(4, 10), pady=(2, 4))
 
-        # Linha de Atalho Global personalizável
+        # Atalho global
         hk_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        hk_row.grid(row=1, column=0, columnspan=3, padx=10, pady=(2, 6), sticky="ew")
+        hk_row.grid(row=2, column=0, columnspan=3, padx=10, pady=(2, 6), sticky="ew")
 
         ctk.CTkLabel(
             hk_row,
             text="Atalho:",
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             text_color=TEXT_SECONDARY,
         ).pack(side="left", padx=(2, 6))
 
@@ -398,7 +455,7 @@ class MixersApp(ctk.CTk):
             text="Ctrl+Alt+M",
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=ACCENT,
-            fg_color=BG_SURFACE,
+            fg_color=CARD_INNER,
             corner_radius=6,
             padx=8,
             pady=2,
@@ -408,12 +465,12 @@ class MixersApp(ctk.CTk):
         self.record_hotkey_btn = ctk.CTkButton(
             hk_row,
             text="Gravar",
-            width=64,
-            height=24,
+            width=60,
+            height=23,
             corner_radius=7,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_BORDER,
-            hover_color="#334155",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             command=self._toggle_record_hotkey,
         )
         self.record_hotkey_btn.pack(side="right", padx=(4, 0))
@@ -421,10 +478,10 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             hk_row,
             text="Limpar",
-            width=54,
-            height=24,
+            width=50,
+            height=23,
             corner_radius=7,
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=10),
             fg_color="transparent",
             hover_color=MUTED_BG,
             text_color=TEXT_SECONDARY,
@@ -435,26 +492,26 @@ class MixersApp(ctk.CTk):
             self.settings_drawer,
             text="Iniciar com o Windows",
             variable=self._autostart_var,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=11),
             progress_color=ACCENT,
             command=self._on_autostart_switch,
         )
         self.autostart_switch.grid(
-            row=2, column=0, columnspan=3, padx=12, pady=(2, 6), sticky="w"
+            row=3, column=0, columnspan=3, padx=12, pady=(2, 6), sticky="w"
         )
 
         prof_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        prof_row.grid(row=3, column=0, columnspan=3, padx=10, pady=(2, 8), sticky="ew")
+        prof_row.grid(row=4, column=0, columnspan=3, padx=10, pady=(2, 6), sticky="ew")
 
         self.profile_menu = ctk.CTkOptionMenu(
             prof_row,
             variable=self._selected_profile,
             values=self._get_profile_options(),
-            width=142,
-            height=25,
+            width=136,
+            height=24,
             font=ctk.CTkFont(size=11),
-            fg_color=BG_SURFACE,
-            button_color=CARD_BORDER,
+            fg_color=CARD_INNER,
+            button_color=PILL_BG,
             button_hover_color=ACCENT,
         )
         self.profile_menu.pack(side="left", padx=(0, 4))
@@ -463,8 +520,8 @@ class MixersApp(ctk.CTk):
             prof_row,
             text="Aplicar",
             width=52,
-            height=25,
-            font=ctk.CTkFont(size=11),
+            height=24,
+            font=ctk.CTkFont(size=10, weight="bold"),
             fg_color=ACCENT,
             hover_color=ACCENT_HOVER,
             text_color="#0B1120",
@@ -474,11 +531,11 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             prof_row,
             text="Salvar",
-            width=50,
-            height=25,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_BORDER,
-            hover_color="#334155",
+            width=48,
+            height=24,
+            font=ctk.CTkFont(size=10),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             command=self._save_profile_dialog,
         ).pack(side="left", padx=(0, 4))
 
@@ -486,32 +543,32 @@ class MixersApp(ctk.CTk):
             prof_row,
             text="X",
             width=26,
-            height=25,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=CARD_BORDER,
+            height=24,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
             hover_color=MUTED_BG,
             command=self._delete_selected_profile,
         ).pack(side="left")
 
         upd_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        upd_row.grid(row=4, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="ew")
+        upd_row.grid(row=5, column=0, columnspan=3, padx=10, pady=(0, 9), sticky="ew")
 
         ctk.CTkLabel(
             upd_row,
             text=f"Versão v{__version__}",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=10),
             text_color=TEXT_SECONDARY,
         ).pack(side="left", padx=(2, 0))
 
         self.check_update_btn = ctk.CTkButton(
             upd_row,
             text="Verificar atualização",
-            width=134,
-            height=24,
+            width=130,
+            height=23,
             corner_radius=7,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_BORDER,
-            hover_color="#334155",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             command=lambda: self.check_updates_async(manual=True),
         )
         self.check_update_btn.pack(side="right")
@@ -522,32 +579,32 @@ class MixersApp(ctk.CTk):
             fg_color="#0C2D48",
             border_color=ACCENT,
             border_width=1,
-            corner_radius=10,
+            corner_radius=11,
         )
         self.update_banner.grid_columnconfigure(0, weight=1)
 
         self.update_banner_lbl = ctk.CTkLabel(
             self.update_banner,
             text="Nova versão disponível!",
-            font=ctk.CTkFont(size=12, weight="bold"),
+            font=ctk.CTkFont(size=11, weight="bold"),
             text_color=TEXT_PRIMARY,
             anchor="w",
         )
-        self.update_banner_lbl.grid(row=0, column=0, padx=10, pady=7, sticky="w")
+        self.update_banner_lbl.grid(row=0, column=0, padx=10, pady=6, sticky="w")
 
         self.update_now_btn = ctk.CTkButton(
             self.update_banner,
             text="Atualizar",
-            width=82,
-            height=24,
+            width=78,
+            height=23,
             corner_radius=7,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(size=10, weight="bold"),
             fg_color=ACCENT,
             hover_color=ACCENT_HOVER,
             text_color="#0B1120",
             command=self._start_update_download,
         )
-        self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=7)
+        self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=6)
 
         # Row 3: Card Volume Geral (Master)
         master_card = ctk.CTkFrame(
@@ -557,59 +614,59 @@ class MixersApp(ctk.CTk):
             border_width=1,
             corner_radius=12,
         )
-        master_card.grid(row=3, column=0, padx=14, pady=(4, 4), sticky="ew")
+        master_card.grid(row=3, column=0, padx=6, pady=(0, 4), sticky="ew")
         master_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             master_card,
             text="Volume Geral",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=TEXT_PRIMARY,
-        ).grid(row=0, column=0, columnspan=2, padx=12, pady=(9, 2), sticky="w")
+        ).grid(row=0, column=0, columnspan=2, padx=11, pady=(8, 1), sticky="w")
 
         self.master_pct_lbl = ctk.CTkLabel(
             master_card,
             text="100%",
-            font=ctk.CTkFont(size=13, weight="bold"),
+            font=ctk.CTkFont(size=12, weight="bold"),
             text_color=ACCENT,
         )
-        self.master_pct_lbl.grid(row=0, column=2, padx=12, pady=(9, 2), sticky="e")
+        self.master_pct_lbl.grid(row=0, column=2, padx=11, pady=(8, 1), sticky="e")
 
         self.master_mute_btn = ctk.CTkButton(
             master_card,
             text="Som",
-            width=52,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            width=48,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
             command=self._toggle_master_mute,
         )
-        self.master_mute_btn.grid(row=1, column=0, padx=(12, 8), pady=(4, 6))
+        self.master_mute_btn.grid(row=1, column=0, padx=(11, 8), pady=(3, 5))
 
         self.master_slider = ctk.CTkSlider(
             master_card,
             from_=0,
             to=100,
             number_of_steps=100,
-            height=16,
+            height=15,
             progress_color=ACCENT,
             button_color=TEXT_PRIMARY,
             button_hover_color=ACCENT,
             command=self._on_master_slider,
         )
-        self.master_slider.grid(row=1, column=1, columnspan=2, padx=(0, 12), pady=(4, 6), sticky="ew")
+        self.master_slider.grid(row=1, column=1, columnspan=2, padx=(0, 11), pady=(3, 5), sticky="ew")
 
         self.master_meter = ctk.CTkProgressBar(
             master_card,
-            height=4,
+            height=3,
             corner_radius=2,
-            fg_color="#0F172A",
+            fg_color=CARD_INNER,
             progress_color=ACCENT,
         )
         self.master_meter.set(0)
-        self.master_meter.grid(row=2, column=0, columnspan=3, padx=12, pady=(0, 9), sticky="ew")
+        self.master_meter.grid(row=2, column=0, columnspan=3, padx=11, pady=(0, 8), sticky="ew")
 
-        # Row 4: Card de Microfones (logo abaixo do Volume Geral)
+        # Row 4: Card de Microfones
         self.mics_card = ctk.CTkFrame(
             self.shell,
             fg_color=CARD_SURFACE,
@@ -617,7 +674,7 @@ class MixersApp(ctk.CTk):
             border_width=1,
             corner_radius=12,
         )
-        self.mics_card.grid(row=4, column=0, padx=14, pady=(2, 6), sticky="ew")
+        self.mics_card.grid(row=4, column=0, padx=6, pady=(0, 4), sticky="ew")
         self.mics_card.grid_columnconfigure(0, weight=1)
 
         mics_header = ctk.CTkFrame(self.mics_card, fg_color="transparent")
@@ -628,11 +685,11 @@ class MixersApp(ctk.CTk):
             mics_header,
             text="Microfones (0)  ▾",
             anchor="w",
-            height=26,
+            height=25,
             corner_radius=8,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="transparent",
-            hover_color="#1E2534",
+            hover_color=PILL_BG,
             text_color=TEXT_PRIMARY,
             command=self._toggle_mics_section,
         )
@@ -641,8 +698,8 @@ class MixersApp(ctk.CTk):
         self.mic_test_btn = ctk.CTkButton(
             mics_header,
             text="Testar",
-            width=58,
-            height=23,
+            width=56,
+            height=22,
             corner_radius=7,
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color="#132A23",
@@ -655,43 +712,52 @@ class MixersApp(ctk.CTk):
         self.mics_body = ctk.CTkFrame(self.mics_card, fg_color="transparent")
         self.mics_body.grid_columnconfigure(0, weight=1)
         if self._mics_expanded:
-            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 7), sticky="ew")
 
-        # Row 5: Barra compacta de ações rápidas + busca de aplicativos
-        quick_row = ctk.CTkFrame(self.shell, fg_color="transparent")
-        quick_row.grid(row=5, column=0, padx=14, pady=(0, 4), sticky="ew")
+        # Row 5: Barra compacta flutuante de ações rápidas + busca
+        quick_card = ctk.CTkFrame(
+            self.shell,
+            fg_color=CARD_SURFACE,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=11,
+        )
+        quick_card.grid(row=5, column=0, padx=6, pady=(0, 4), sticky="ew")
+
+        quick_row = ctk.CTkFrame(quick_card, fg_color="transparent")
+        quick_row.pack(fill="x", padx=6, pady=5)
 
         ctk.CTkButton(
             quick_row,
             text="100%",
-            width=46,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_SURFACE,
-            hover_color=CARD_BORDER,
+            width=44,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             command=self._preset_full_volume,
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             quick_row,
-            text="Foco 30%",
-            width=66,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_SURFACE,
-            hover_color=CARD_BORDER,
+            text="Foco",
+            width=46,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
             command=self._preset_focus_mode,
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             quick_row,
             text="Mutar",
-            width=52,
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=11),
+            width=48,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
             fg_color=MUTED_BG,
             hover_color=MUTED_HOVER,
             command=self._preset_mute_all_apps,
@@ -699,52 +765,58 @@ class MixersApp(ctk.CTk):
 
         self.search_entry = ctk.CTkEntry(
             quick_row,
-            placeholder_text="Buscar app...",
+            placeholder_text="Filtrar app...",
             textvariable=self._search_var,
-            height=25,
-            corner_radius=8,
+            height=24,
+            corner_radius=7,
             font=ctk.CTkFont(size=11),
-            fg_color=CARD_SURFACE,
+            fg_color=CARD_INNER,
             border_color=CARD_BORDER,
         )
         self.search_entry.pack(side="right", fill="x", expand=True)
 
-        # Row 6: Lista rolável de aplicativos
+        # Row 6: Lista rolável de cards flutuantes (fundo transparente entre os cards)
         self.apps_scroll = ctk.CTkScrollableFrame(
             self.shell,
-            fg_color="transparent",
+            fg_color=self._surface_bg,
             scrollbar_button_color=CARD_BORDER,
-            scrollbar_button_hover_color="#334155",
+            scrollbar_button_hover_color="#3B4A66",
         )
-        self.apps_scroll.grid(row=6, column=0, padx=10, pady=(2, 4), sticky="nsew")
+        self.apps_scroll.grid(row=6, column=0, padx=2, pady=(0, 4), sticky="nsew")
         self.apps_scroll.grid_columnconfigure(0, weight=1)
 
-        # Row 7: Rodapé minimalista
-        footer = ctk.CTkFrame(self.shell, fg_color="transparent")
-        footer.grid(row=7, column=0, padx=14, pady=(2, 10), sticky="ew")
+        # Row 7: Rodapé flutuante discreto
+        footer = ctk.CTkFrame(
+            self.shell,
+            fg_color=CARD_SURFACE,
+            border_color=CARD_BORDER,
+            border_width=1,
+            corner_radius=10,
+        )
+        footer.grid(row=7, column=0, padx=6, pady=(0, 6), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
 
         self.status_lbl = ctk.CTkLabel(
             footer,
             text="Pronto • segundo plano ativo",
             anchor="w",
-            font=ctk.CTkFont(size=11),
+            font=ctk.CTkFont(size=10),
             text_color=TEXT_SECONDARY,
         )
-        self.status_lbl.grid(row=0, column=0, sticky="w")
+        self.status_lbl.grid(row=0, column=0, padx=(10, 4), pady=5, sticky="w")
 
         ctk.CTkButton(
             footer,
             text="Sair",
-            width=42,
-            height=22,
+            width=38,
+            height=20,
             corner_radius=6,
             font=ctk.CTkFont(size=10),
             fg_color="transparent",
             hover_color=MUTED_BG,
             text_color=TEXT_SECONDARY,
             command=self.quit_app,
-        ).grid(row=0, column=1, sticky="e")
+        ).grid(row=0, column=1, padx=(0, 6), pady=4, sticky="e")
 
     # ------------------------------------------------------------------
     # Timers (0% CPU quando oculto)
@@ -784,7 +856,7 @@ class MixersApp(ctk.CTk):
 
     def show_from_tray(self) -> None:
         self._is_visible = True
-        self._compute_and_set_position(y_offset=16)
+        self._compute_and_set_position(y_offset=14)
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -895,7 +967,7 @@ class MixersApp(ctk.CTk):
             self._set_status(f"Erro de áudio: {exc}")
             return
 
-        self.device_lbl.configure(text=self._truncate(dev_name, 32))
+        self.device_lbl.configure(text=self._truncate(dev_name, 30))
         if master_vol != self._last_master_pct:
             self._last_master_pct = master_vol
             self.master_slider.set(master_vol)
@@ -928,7 +1000,7 @@ class MixersApp(ctk.CTk):
         self._set_status(f"{len(sessions)} app(s) • {len(mics)} mic(s){hk_hint}")
 
     # ------------------------------------------------------------------
-    # Microfones (Sensibilidade, Mudo & Qualidade/Medidor de Voz)
+    # Microfones (Sensibilidade, Mudo & Medidor de Voz)
     # ------------------------------------------------------------------
     def _toggle_mic_test(self) -> None:
         if self._mic_monitor.active:
@@ -967,7 +1039,7 @@ class MixersApp(ctk.CTk):
             text=f"Microfones ({len(self._current_mics)})  {arrow}"
         )
         if self._mics_expanded:
-            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
+            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 7), sticky="ew")
         else:
             self._stop_mic_test()
             self.mics_body.grid_forget()
@@ -992,10 +1064,10 @@ class MixersApp(ctk.CTk):
         for idx, mic in enumerate(self._current_mics.values()):
             row_frame = ctk.CTkFrame(
                 self.mics_body,
-                fg_color=BG_SURFACE,
+                fg_color=CARD_INNER,
                 corner_radius=9,
             )
-            row_frame.grid(row=idx, column=0, pady=3, sticky="ew")
+            row_frame.grid(row=idx, column=0, pady=2, sticky="ew")
             row_frame.grid_columnconfigure(1, weight=1)
 
             vol_pct = int(round(mic.volume * 100))
@@ -1007,7 +1079,7 @@ class MixersApp(ctk.CTk):
 
             ctk.CTkLabel(
                 row_frame,
-                text=self._truncate(mic.name, 22),
+                text=self._truncate(mic.name, 21),
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=TEXT_PRIMARY,
                 anchor="w",
@@ -1035,8 +1107,8 @@ class MixersApp(ctk.CTk):
             mute_btn = ctk.CTkButton(
                 row_frame,
                 text="Mudo" if mic.muted else "Mic",
-                width=46,
-                height=22,
+                width=44,
+                height=21,
                 corner_radius=6,
                 font=ctk.CTkFont(size=10, weight="bold"),
                 command=lambda did=mic.device_id: self._toggle_mic_mute(did),
@@ -1060,13 +1132,13 @@ class MixersApp(ctk.CTk):
 
             meter = ctk.CTkProgressBar(
                 row_frame,
-                height=4,
+                height=3,
                 corner_radius=2,
-                fg_color="#0F172A",
+                fg_color="#172033",
                 progress_color=q_color,
             )
             meter.set(init_peak)
-            meter.grid(row=2, column=0, columnspan=3, padx=8, pady=(0, 7), sticky="ew")
+            meter.grid(row=2, column=0, columnspan=3, padx=8, pady=(0, 6), sticky="ew")
 
             self._mic_rows[mic.device_id] = {
                 "mute_btn": mute_btn,
@@ -1137,18 +1209,26 @@ class MixersApp(ctk.CTk):
         ]
 
         if not filtered:
+            empty_card = ctk.CTkFrame(
+                self.apps_scroll,
+                fg_color=CARD_SURFACE,
+                border_color=CARD_BORDER,
+                border_width=1,
+                corner_radius=12,
+            )
+            empty_card.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
             msg = (
                 "Nenhum app encontrado."
                 if query
                 else "Nenhum aplicativo tocando som agora.\nAbra um navegador, música ou jogo."
             )
             ctk.CTkLabel(
-                self.apps_scroll,
+                empty_card,
                 text=msg,
-                font=ctk.CTkFont(size=12),
+                font=ctk.CTkFont(size=11),
                 text_color=TEXT_SECONDARY,
                 justify="center",
-            ).grid(row=0, column=0, padx=12, pady=32)
+            ).pack(padx=12, pady=24)
             return
 
         for idx, session in enumerate(filtered):
@@ -1157,9 +1237,9 @@ class MixersApp(ctk.CTk):
                 fg_color=CARD_SURFACE,
                 border_color=CARD_BORDER,
                 border_width=1,
-                corner_radius=12,
+                corner_radius=11,
             )
-            card.grid(row=idx, column=0, padx=4, pady=4, sticky="ew")
+            card.grid(row=idx, column=0, padx=4, pady=3, sticky="ew")
             card.grid_columnconfigure(1, weight=1)
 
             vol_pct = int(round(session.volume * 100))
@@ -1167,11 +1247,11 @@ class MixersApp(ctk.CTk):
 
             ctk.CTkLabel(
                 card,
-                text=self._truncate(session.display_name, 26),
-                font=ctk.CTkFont(size=13, weight="bold"),
+                text=self._truncate(session.display_name, 25),
+                font=ctk.CTkFont(size=12, weight="bold"),
                 text_color=TEXT_PRIMARY,
                 anchor="w",
-            ).grid(row=0, column=0, columnspan=2, padx=10, pady=(8, 2), sticky="w")
+            ).grid(row=0, column=0, columnspan=2, padx=10, pady=(7, 1), sticky="w")
 
             pct_lbl = ctk.CTkLabel(
                 card,
@@ -1179,45 +1259,45 @@ class MixersApp(ctk.CTk):
                 font=ctk.CTkFont(size=12, weight="bold"),
                 text_color=TEXT_SECONDARY if session.muted else ACCENT,
             )
-            pct_lbl.grid(row=0, column=2, padx=10, pady=(8, 2), sticky="e")
+            pct_lbl.grid(row=0, column=2, padx=10, pady=(7, 1), sticky="e")
 
             mute_btn = ctk.CTkButton(
                 card,
                 text="Mudo" if session.muted else "Som",
-                width=50,
-                height=24,
+                width=46,
+                height=22,
                 corner_radius=7,
-                font=ctk.CTkFont(size=11, weight="bold"),
+                font=ctk.CTkFont(size=10, weight="bold"),
                 command=lambda aid=session.app_id: self._toggle_app_mute(aid),
             )
             self._style_mute_button(mute_btn, session.muted)
-            mute_btn.grid(row=1, column=0, padx=(10, 6), pady=(2, 6))
+            mute_btn.grid(row=1, column=0, padx=(10, 6), pady=(2, 5))
 
             slider = ctk.CTkSlider(
                 card,
                 from_=0,
                 to=100,
                 number_of_steps=100,
-                height=15,
+                height=14,
                 progress_color=ACCENT,
                 button_color=TEXT_PRIMARY,
                 button_hover_color=ACCENT,
                 command=lambda val, aid=session.app_id: self._on_app_slider(aid, val),
             )
             slider.set(vol_pct)
-            slider.grid(row=1, column=1, columnspan=2, padx=(0, 10), pady=(2, 6), sticky="ew")
+            slider.grid(row=1, column=1, columnspan=2, padx=(0, 10), pady=(2, 5), sticky="ew")
 
             meter = ctk.CTkProgressBar(
                 card,
                 height=3,
                 corner_radius=2,
-                fg_color="#0F172A",
+                fg_color=CARD_INNER,
                 progress_color=ACCENT,
             )
             init_peak = 0.0 if session.muted else session.peak_level
             meter.set(init_peak)
             self._last_app_peak[session.app_id] = init_peak
-            meter.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="ew")
+            meter.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 7), sticky="ew")
 
             self._app_rows[session.app_id] = {
                 "mute_btn": mute_btn,
@@ -1289,19 +1369,27 @@ class MixersApp(ctk.CTk):
             self.pin_btn.configure(fg_color=ACCENT, text_color="#0B1120")
             self._set_status("Painel fixado na tela.")
         else:
-            self.pin_btn.configure(fg_color=CARD_SURFACE, text_color=TEXT_SECONDARY)
+            self.pin_btn.configure(fg_color=PILL_BG, text_color=TEXT_SECONDARY)
             self._set_status("Oculta automaticamente ao clicar fora.")
 
     def _toggle_settings_drawer(self) -> None:
         self._settings_open = not self._settings_open
         if self._settings_open:
-            self.settings_drawer.grid(row=1, column=0, padx=14, pady=(2, 6), sticky="ew")
+            self.settings_drawer.grid(row=1, column=0, padx=6, pady=(0, 4), sticky="ew")
             self.settings_btn.configure(fg_color=ACCENT, text_color="#0B1120")
         else:
             if self._recording_hotkey:
                 self._cancel_record_hotkey()
             self.settings_drawer.grid_forget()
-            self.settings_btn.configure(fg_color=CARD_SURFACE, text_color=TEXT_SECONDARY)
+            self.settings_btn.configure(fg_color=PILL_BG, text_color=TEXT_SECONDARY)
+
+    def _on_transparent_bg_switch(self) -> None:
+        self._transparent_bg = bool(self._transparent_bg_var.get())
+        self.settings.set("transparent_bg", self._transparent_bg)
+        self._apply_transparency_mode()
+        self._set_status(
+            "Fundo transparente ativado." if self._transparent_bg else "Fundo sólido ativado."
+        )
 
     def _on_alpha_change(self, value: float) -> None:
         pct = int(round(value))
@@ -1347,7 +1435,7 @@ class MixersApp(ctk.CTk):
     def _cancel_record_hotkey(self) -> None:
         self._recording_hotkey = False
         self.record_hotkey_btn.configure(
-            text="Gravar", fg_color=CARD_BORDER, text_color=TEXT_PRIMARY
+            text="Gravar", fg_color=PILL_BG, text_color=TEXT_PRIMARY
         )
         self._update_hotkey_badge(self.hotkey_manager.current_hotkey)
 
@@ -1356,7 +1444,7 @@ class MixersApp(ctk.CTk):
         self.hotkey_manager.register("")
         self.settings.set("hotkey", "")
         self.record_hotkey_btn.configure(
-            text="Gravar", fg_color=CARD_BORDER, text_color=TEXT_PRIMARY
+            text="Gravar", fg_color=PILL_BG, text_color=TEXT_PRIMARY
         )
         self._update_hotkey_badge("")
         self._set_status("Atalho global desativado.")
@@ -1373,7 +1461,6 @@ class MixersApp(ctk.CTk):
             self._set_status("Gravação de atalho cancelada.")
             return
 
-        # Ignora pressionamento isolado de teclas modificadoras
         if keysym in (
             "Control_L", "Control_R", "Alt_L", "Alt_R",
             "Shift_L", "Shift_R", "Super_L", "Super_R", "Win_L", "Win_R",
@@ -1382,11 +1469,11 @@ class MixersApp(ctk.CTk):
 
         state = int(getattr(event, "state", 0))
         mods: list[str] = []
-        if state & 0x0004:  # Control
+        if state & 0x0004:
             mods.append("Ctrl")
-        if state & 0x0008 or state & 0x20000:  # Alt (Linux / Windows)
+        if state & 0x0008 or state & 0x20000:
             mods.append("Alt")
-        if state & 0x0001:  # Shift
+        if state & 0x0001:
             mods.append("Shift")
 
         key_name = keysym.upper() if len(keysym) == 1 else keysym
@@ -1395,14 +1482,13 @@ class MixersApp(ctk.CTk):
         ok, msg = self.hotkey_manager.register(combo)
         self._recording_hotkey = False
         self.record_hotkey_btn.configure(
-            text="Gravar", fg_color=CARD_BORDER, text_color=TEXT_PRIMARY
+            text="Gravar", fg_color=PILL_BG, text_color=TEXT_PRIMARY
         )
         if ok:
             self.settings.set("hotkey", self.hotkey_manager.current_hotkey)
             self._update_hotkey_badge(self.hotkey_manager.current_hotkey)
             self._set_status(msg)
         else:
-            # Restaura o atalho anterior caso o novo seja inválido ou esteja ocupado
             prev = str(self.settings.get("hotkey", ""))
             if prev:
                 self.hotkey_manager.register(prev)
@@ -1517,7 +1603,7 @@ class MixersApp(ctk.CTk):
         if info is not None:
             self._pending_update = info
             self.update_banner_lbl.configure(text=f"Nova versão v{info.version} disponível!")
-            self.update_banner.grid(row=2, column=0, padx=14, pady=(2, 4), sticky="ew")
+            self.update_banner.grid(row=2, column=0, padx=6, pady=(0, 4), sticky="ew")
             self._set_status(f"Atualização v{info.version} pronta para instalar.")
         elif manual:
             self._set_status(f"Você já está na versão mais recente (v{__version__}).")
@@ -1585,8 +1671,8 @@ class MixersApp(ctk.CTk):
         else:
             btn.configure(
                 text="Som",
-                fg_color="#1E293B",
-                hover_color="#334155",
+                fg_color=PILL_BG,
+                hover_color=PILL_HOVER,
                 text_color=ACCENT,
             )
 
