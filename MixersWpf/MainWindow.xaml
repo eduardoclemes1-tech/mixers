@@ -174,8 +174,11 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="MicsListBand" Grid.Row="4" Padding="0,3,0,6">
-                    <StackPanel x:Name="MicsPanel"/>
+                <Border x:Name="MicsListBand" Grid.Row="4" MaxHeight="138" Padding="0,3,0,6">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel x:Name="MicsPanel"/>
+                    </ScrollViewer>
                 </Border>
             </Grid>
 
@@ -221,6 +224,8 @@
                 </Border>
 
                 <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,12,16,10">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Disabled">
                     <StackPanel>
                         <!-- Opacidade -->
                         <Grid Margin="0,0,0,10">
@@ -290,6 +295,7 @@
                             <Button Grid.Column="3" Content="X" Style="{StaticResource PillButtonStyle}" Background="#667F1D2D" Padding="8,4" Click="DeleteProfileBtn_Click"/>
                         </Grid>
                     </StackPanel>
+                    </ScrollViewer>
                 </Border>
 
                 <!-- Rodapé Ajustes -->

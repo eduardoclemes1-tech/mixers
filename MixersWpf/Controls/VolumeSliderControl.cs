@@ -6,7 +6,7 @@ using System.Windows.Media;
 namespace Mixers.Controls;
 
 /// <summary>
-/// Slider nativo GPU-acelerado (DirectX) fiel ao EarTrumpet / Windows 11:
+/// Slider nativo GPU-acelerado (DirectX) com Brushes congelados (zero alocações por frame):
 /// trilha fina de 2px, barra branca de pico ao vivo sobreposta na trilha,
 /// pílula vertical slim e scroll do mouse.
 /// </summary>
@@ -18,11 +18,12 @@ public sealed class VolumeSliderControl : FrameworkElement
     private bool _hovered;
     private bool _dragging;
 
-    private Color _accent = Color.FromRgb(139, 92, 246);
-    private Color _accentHover = Color.FromRgb(167, 139, 250);
-    private Color _trackUnfilled = Color.FromArgb(135, 165, 160, 190);
-    private Color _trackMuted = Color.FromArgb(90, 130, 126, 150);
-    private Color _thumbMuted = Color.FromRgb(115, 110, 138);
+    private SolidColorBrush _accentBrush = CreateFrozen(Color.FromRgb(139, 92, 246));
+    private SolidColorBrush _accentHoverBrush = CreateFrozen(Color.FromRgb(167, 139, 250));
+    private SolidColorBrush _trackUnfilledBrush = CreateFrozen(Color.FromArgb(135, 165, 160, 190));
+    private SolidColorBrush _trackMutedBrush = CreateFrozen(Color.FromArgb(90, 130, 126, 150));
+    private SolidColorBrush _thumbMutedBrush = CreateFrozen(Color.FromRgb(115, 110, 138));
+    private SolidColorBrush _peakBrush = Brushes.White;
     private Color _peakColor = Colors.White;
 
     public event Action<int>? ValueChanged;
@@ -32,6 +33,13 @@ public sealed class VolumeSliderControl : FrameworkElement
         Height = 28;
         Cursor = Cursors.Hand;
         SnapsToDevicePixels = false;
+    }
+
+    private static SolidColorBrush CreateFrozen(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
     }
 
     public int Value
@@ -63,11 +71,11 @@ public sealed class VolumeSliderControl : FrameworkElement
 
     public void ApplyColors(Color accent, Color accentHover, Color trackUnfilled, Color trackMuted, Color thumbMuted)
     {
-        _accent = accent;
-        _accentHover = accentHover;
-        _trackUnfilled = trackUnfilled;
-        _trackMuted = trackMuted;
-        _thumbMuted = thumbMuted;
+        _accentBrush = CreateFrozen(accent);
+        _accentHoverBrush = CreateFrozen(accentHover);
+        _trackUnfilledBrush = CreateFrozen(trackUnfilled);
+        _trackMutedBrush = CreateFrozen(trackMuted);
+        _thumbMutedBrush = CreateFrozen(thumbMuted);
         InvalidateVisual();
     }
 
@@ -75,10 +83,14 @@ public sealed class VolumeSliderControl : FrameworkElement
     {
         float clamped = Math.Clamp(peak, 0f, 1f);
         bool colorChanged = color.HasValue && color.Value != _peakColor;
-        if (Math.Abs(clamped - _peak) < 0.012f && !colorChanged) return;
+        if (Math.Abs(clamped - _peak) < 0.014f && !colorChanged) return;
 
         _peak = clamped;
-        if (color.HasValue) _peakColor = color.Value;
+        if (colorChanged && color.HasValue)
+        {
+            _peakColor = color.Value;
+            _peakBrush = CreateFrozen(color.Value);
+        }
         InvalidateVisual();
     }
 
@@ -88,7 +100,6 @@ public sealed class VolumeSliderControl : FrameworkElement
         double h = ActualHeight;
         if (w < 16 || h < 8) return;
 
-        // Hit-test transparente em toda a área do controle
         dc.DrawRectangle(Brushes.Transparent, null, new Rect(0, 0, w, h));
 
         const double pad = 5.0;
@@ -100,14 +111,22 @@ public sealed class VolumeSliderControl : FrameworkElement
         double kx = x0 + usable * ratio;
 
         // 1. Trilha base fina (2px)
-        var trackBrush = new SolidColorBrush(_muted ? _trackMuted : _trackUnfilled);
-        dc.DrawRoundedRectangle(trackBrush, null, new Rect(x0, cy - 1.0, usable, 2.0), 1.0, 1.0);
+        dc.DrawRoundedRectangle(
+            _muted ? _trackMutedBrush : _trackUnfilledBrush,
+            null,
+            new Rect(x0, cy - 1.0, usable, 2.0),
+            1.0,
+            1.0);
 
         // 2. Trilha preenchida (volume)
         if (ratio > 0)
         {
-            var fillBrush = new SolidColorBrush(_muted ? _thumbMuted : _accent);
-            dc.DrawRoundedRectangle(fillBrush, null, new Rect(x0, cy - 1.0, Math.Max(2.0, kx - x0), 2.0), 1.0, 1.0);
+            dc.DrawRoundedRectangle(
+                _muted ? _thumbMutedBrush : _accentBrush,
+                null,
+                new Rect(x0, cy - 1.0, Math.Max(2.0, kx - x0), 2.0),
+                1.0,
+                1.0);
         }
 
         // 3. Medidor de áudio ao vivo sobreposto na própria trilha
@@ -116,16 +135,22 @@ public sealed class VolumeSliderControl : FrameworkElement
             double peakWidth = usable * Math.Min(ratio, _peak * ratio);
             if (peakWidth > 2.0)
             {
-                var peakBrush = new SolidColorBrush(_peakColor);
-                dc.DrawRoundedRectangle(peakBrush, null, new Rect(x0, cy - 1.2, peakWidth, 2.4), 1.2, 1.2);
+                dc.DrawRoundedRectangle(
+                    _peakBrush,
+                    null,
+                    new Rect(x0, cy - 1.2, peakWidth, 2.4),
+                    1.2,
+                    1.2);
             }
         }
 
-        // 4. Pílula vertical slim (4x16px, expande suavemente no hover)
+        // 4. Pílula vertical slim (4x15px, expande suavemente no hover)
         double pillW = (_hovered || _dragging) ? 5.0 : 4.0;
         double pillH = (_hovered || _dragging) ? 18.0 : 15.0;
-        Color thumbCol = _muted ? _thumbMuted : ((_hovered || _dragging) ? _accentHover : _accent);
-        var thumbBrush = new SolidColorBrush(thumbCol);
+        var thumbBrush = _muted
+            ? _thumbMutedBrush
+            : ((_hovered || _dragging) ? _accentHoverBrush : _accentBrush);
+
         dc.DrawRoundedRectangle(
             thumbBrush,
             null,
@@ -160,10 +185,7 @@ public sealed class VolumeSliderControl : FrameworkElement
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (_dragging)
-        {
-            UpdateFromPoint(e.GetPosition(this));
-        }
+        if (_dragging) UpdateFromPoint(e.GetPosition(this));
     }
 
     protected override void OnMouseLeftButtonUp(MouseButtonEventArgs e)

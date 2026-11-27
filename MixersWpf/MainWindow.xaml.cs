@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using Mixers.Controls;
 using Mixers.Services;
 
@@ -15,17 +16,31 @@ namespace Mixers;
 
 public partial class MainWindow : Window
 {
-    private const double MinWindowHeight = 360;
+    private const double BaseWindowWidth = 356;
+    private const double MinWindowHeight = 350;
     private const double MaxWindowHeight = 560;
+
+    private static readonly SolidColorBrush PrimaryTextBrush = CreateFrozenBrush(Color.FromRgb(244, 244, 248));
+    private static readonly SolidColorBrush MutedTextBrush = CreateFrozenBrush(Color.FromRgb(130, 125, 152));
+    private static readonly SolidColorBrush SubtleButtonBrush = CreateFrozenBrush(Color.FromArgb(34, 255, 255, 255));
+    private static readonly SolidColorBrush DangerActiveBrush = CreateFrozenBrush(Color.FromRgb(139, 38, 62));
+
+    private static SolidColorBrush CreateFrozenBrush(Color c)
+    {
+        var b = new SolidColorBrush(c);
+        b.Freeze();
+        return b;
+    }
 
     private readonly AudioService _audio = new();
     private readonly SettingsService _settings = new();
     private readonly HotkeyService _hotkey;
     private readonly TrayService _tray;
-    private readonly FluentThemePalette _theme;
+    private FluentThemePalette _theme;
 
     private readonly DispatcherTimer _sessionTimer;
     private readonly DispatcherTimer _meterTimer;
+    private readonly DispatcherTimer _opacitySaveTimer;
 
     private readonly Dictionary<string, AppRowWidgets> _appRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
@@ -46,6 +61,8 @@ public partial class MainWindow : Window
         public required Button IconBtn { get; init; }
         public required VolumeSliderControl Slider { get; init; }
         public required TextBlock PercentText { get; init; }
+        public bool LastMuted { get; set; }
+        public int LastVolumePct { get; set; }
     }
 
     private sealed class MicRowWidgets
@@ -55,6 +72,9 @@ public partial class MainWindow : Window
         public required TextBlock IconGlyph { get; init; }
         public required VolumeSliderControl Slider { get; init; }
         public required TextBlock PercentText { get; init; }
+        public bool LastMuted { get; set; }
+        public int LastVolumePct { get; set; }
+        public string LastQualityLabel { get; set; } = "";
     }
 
     public MainWindow(bool startMinimized)
@@ -111,6 +131,16 @@ public partial class MainWindow : Window
             }
         };
 
+        _opacitySaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
+        _opacitySaveTimer.Tick += (_, _) =>
+        {
+            _opacitySaveTimer.Stop();
+            _settings.SaveSettings();
+        };
+
+        SystemEvents.DisplaySettingsChanged += OnSystemDisplayChanged;
+        SystemEvents.UserPreferenceChanged += OnSystemUserPreferenceChanged;
+
         SourceInitialized += (_, _) => WindowsThemeService.EnableAcrylicBlur(this);
         Deactivated += (_, _) => OnWindowDeactivated();
         PreviewKeyDown += OnWindowKeyDown;
@@ -150,6 +180,28 @@ public partial class MainWindow : Window
 
         ApplySliderPalette(MasterSlider);
         ApplySliderPalette(OpacitySlider);
+        foreach (var row in _appRows.Values) ApplySliderPalette(row.Slider);
+        foreach (var row in _micRows.Values) ApplySliderPalette(row.Slider);
+    }
+
+    private void OnSystemDisplayChanged(object? sender, EventArgs e)
+    {
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_isVisible) PositionBottomRight();
+        });
+    }
+
+    private void OnSystemUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                _theme = WindowsThemeService.BuildPalette(WindowsThemeService.GetWindowsAccentColor());
+                ApplyTheme();
+            });
+        }
     }
 
     private void ApplySliderPalette(VolumeSliderControl slider)
@@ -167,11 +219,16 @@ public partial class MainWindow : Window
     // ------------------------------------------------------------------
     private void PositionBottomRight()
     {
-        double targetHeight = ComputeDesiredHeight();
-        Height = targetHeight;
-
         Rect workArea = SystemParameters.WorkArea;
         const double margin = 12;
+
+        double maxAllowedW = Math.Max(290, workArea.Width - margin * 2);
+        Width = Math.Min(BaseWindowWidth, maxAllowedW);
+
+        double maxAllowedH = Math.Min(MaxWindowHeight, Math.Max(310, workArea.Height - margin * 2));
+        double minAllowedH = Math.Min(MinWindowHeight, maxAllowedH);
+        Height = Math.Clamp(ComputeDesiredHeight(), minAllowedH, maxAllowedH);
+
         Left = Math.Max(workArea.Left + margin, workArea.Right - Width - margin);
         Top = Math.Max(workArea.Top + margin, workArea.Bottom - Height - margin);
     }
@@ -373,7 +430,11 @@ public partial class MainWindow : Window
                 float p = row.Mic.Muted ? 0f : micPeaks.GetValueOrDefault(devId, 0f);
                 var (label, col) = AudioService.ClassifyMicQuality(p, row.Mic.Muted);
                 row.Slider.SetPeak(p, col);
-                row.IconBtn.ToolTip = $"{row.Mic.Name}  •  {label}";
+                if (!string.Equals(row.LastQualityLabel, label, StringComparison.Ordinal))
+                {
+                    row.LastQualityLabel = label;
+                    row.IconBtn.ToolTip = $"{row.Mic.Name}  •  {label}";
+                }
             }
         }
     }
@@ -450,7 +511,9 @@ public partial class MainWindow : Window
                 Session = session,
                 IconBtn = iconBtn,
                 Slider = slider,
-                PercentText = pctText
+                PercentText = pctText,
+                LastMuted = session.Muted,
+                LastVolumePct = pct
             };
         }
     }
@@ -506,11 +569,19 @@ public partial class MainWindow : Window
             if (!_appRows.TryGetValue(session.AppId, out var row)) continue;
             row.Session = session;
             int pct = (int)Math.Round(session.Volume * 100);
-            row.Slider.Value = pct;
-            row.Slider.IsMuted = session.Muted;
-            row.PercentText.Text = pct.ToString();
-            row.PercentText.Foreground = new SolidColorBrush(session.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
-            row.IconBtn.Content = CreateAppIconContent(session);
+            if (pct != row.LastVolumePct)
+            {
+                row.LastVolumePct = pct;
+                row.Slider.Value = pct;
+                row.PercentText.Text = pct.ToString();
+            }
+            if (session.Muted != row.LastMuted)
+            {
+                row.LastMuted = session.Muted;
+                row.Slider.IsMuted = session.Muted;
+                row.PercentText.Foreground = session.Muted ? MutedTextBrush : PrimaryTextBrush;
+                row.IconBtn.Content = CreateAppIconContent(session);
+            }
         }
     }
 
@@ -596,7 +667,10 @@ public partial class MainWindow : Window
                 IconBtn = iconBtn,
                 IconGlyph = glyph,
                 Slider = slider,
-                PercentText = pctText
+                PercentText = pctText,
+                LastMuted = mic.Muted,
+                LastVolumePct = pct,
+                LastQualityLabel = label
             };
         }
     }
@@ -608,12 +682,20 @@ public partial class MainWindow : Window
             if (!_micRows.TryGetValue(mic.DeviceId, out var row)) continue;
             row.Mic = mic;
             int pct = (int)Math.Round(mic.Volume * 100);
-            row.Slider.Value = pct;
-            row.Slider.IsMuted = mic.Muted;
-            row.PercentText.Text = pct.ToString();
-            row.PercentText.Foreground = new SolidColorBrush(mic.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
-            row.IconGlyph.Text = mic.Muted ? "\uF781" : "\uE720";
-            row.IconGlyph.Foreground = new SolidColorBrush(mic.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
+            if (pct != row.LastVolumePct)
+            {
+                row.LastVolumePct = pct;
+                row.Slider.Value = pct;
+                row.PercentText.Text = pct.ToString();
+            }
+            if (mic.Muted != row.LastMuted)
+            {
+                row.LastMuted = mic.Muted;
+                row.Slider.IsMuted = mic.Muted;
+                row.PercentText.Foreground = mic.Muted ? MutedTextBrush : PrimaryTextBrush;
+                row.IconGlyph.Text = mic.Muted ? "\uF781" : "\uE720";
+                row.IconGlyph.Foreground = mic.Muted ? MutedTextBrush : PrimaryTextBrush;
+            }
         }
     }
 
@@ -759,7 +841,8 @@ public partial class MainWindow : Window
         _settings.Settings.Alpha = clamped / 100.0;
         BeginAnimation(OpacityProperty, null);
         Opacity = _settings.Settings.Alpha;
-        _settings.SaveSettings();
+        _opacitySaveTimer.Stop();
+        _opacitySaveTimer.Start();
     }
 
     private void AnimationsCheck_Click(object sender, RoutedEventArgs e)
@@ -1059,6 +1142,9 @@ public partial class MainWindow : Window
 
     private void QuitApplication()
     {
+        SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
+        SystemEvents.UserPreferenceChanged -= OnSystemUserPreferenceChanged;
+        _opacitySaveTimer.Stop();
         _sessionTimer.Stop();
         _meterTimer.Stop();
         _hotkey.Dispose();

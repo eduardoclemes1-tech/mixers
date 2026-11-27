@@ -35,6 +35,7 @@ public sealed class AudioService : IDisposable
     private readonly MMDeviceEnumerator _enumerator = new();
     private MMDevice? _defaultOutput;
     private readonly Dictionary<string, List<AudioSessionControl>> _sessionCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<uint, (string AppId, string DisplayName, string? ExePath)> _pidMetaCache = new();
     private readonly Dictionary<string, MMDevice> _micCache = new(StringComparer.OrdinalIgnoreCase);
     private WasapiCapture? _micTestCapture;
 
@@ -186,23 +187,33 @@ public sealed class AudioService : IDisposable
                         }
                         else
                         {
-                            try
+                            if (_pidMetaCache.TryGetValue(pid, out var cachedMeta))
                             {
-                                using var proc = Process.GetProcessById((int)pid);
-                                string rawName = proc.ProcessName;
-                                appId = rawName.ToLowerInvariant();
-                                displayName = FormatAppName(rawName);
+                                appId = cachedMeta.AppId;
+                                displayName = cachedMeta.DisplayName;
+                                exePath = cachedMeta.ExePath;
+                            }
+                            else
+                            {
                                 try
                                 {
-                                    exePath = proc.MainModule?.FileName;
+                                    using var proc = Process.GetProcessById((int)pid);
+                                    string rawName = proc.ProcessName;
+                                    appId = rawName.ToLowerInvariant();
+                                    displayName = FormatAppName(rawName);
+                                    try
+                                    {
+                                        exePath = proc.MainModule?.FileName;
+                                    }
+                                    catch
+                                    {
+                                    }
+                                    _pidMetaCache[pid] = (appId, displayName, exePath);
                                 }
                                 catch
                                 {
+                                    continue;
                                 }
-                            }
-                            catch
-                            {
-                                continue;
                             }
                         }
                     }
@@ -256,8 +267,16 @@ public sealed class AudioService : IDisposable
             RefreshDefaultOutput();
         }
 
+        foreach (var oldList in _sessionCache.Values)
+        {
+            foreach (var oldCtrl in oldList)
+            {
+                try { oldCtrl.Dispose(); } catch { }
+            }
+        }
         _sessionCache.Clear();
         foreach (var kv in newCache) _sessionCache[kv.Key] = kv.Value;
+        if (_pidMetaCache.Count > 128) _pidMetaCache.Clear();
 
         return grouped.Values
             .OrderBy(a => !a.IsSystemSounds)
