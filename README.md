@@ -18,8 +18,9 @@ Escolha a opção que preferir (sempre baixa a versão mais recente):
 
 ## ✨ Funcionalidades
 
-- **Roda em segundo plano (System Tray):** clique no ícone perto do relógio para abrir/ocultar; clique fora ou aperte `Esc` para recolher.
-- **Visual clean e transparente:** tema escuro translúcido com cantos arredondados nativos do Windows 11 e controle de **Transparência** (65% a 100%) em **Ajustes**.
+- **Roda em segundo plano (System Tray):** clique no ícone perto do relógio ou pressione o **atalho global** (`Ctrl+Alt+M` por padrão, personalizável em **Ajustes**) para abrir/ocultar com animação suave.
+- **Visual clean e transparente:** tema escuro translúcido com cantos arredondados nativos do Windows 11 e controle de **Transparência** (65% a 100%) salvo automaticamente.
+- **Microfones & Sensibilidade:** lista todos os microfones ativos logo abaixo do Volume Geral, com ajuste individual de sensibilidade e botão de mudo.
 - **Interativo em tempo real:** medidor visual de som (VU meter) em cada aplicativo e no volume geral, além do dispositivo de saída ativo.
 - **Volume Geral + Por Aplicativo:** controle individual e botão de mudo para cada programa aberto (navegador, Spotify, Discord, jogos, etc.).
 - **Ações rápidas & Perfis:** botões de `100%`, `Foco 30%`, `Mutar`, busca rápida e perfis personalizados.

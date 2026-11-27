@@ -37,6 +37,16 @@ class AppAudioSession:
     peak_level: float = 0.0  # 0.0 a 1.0 (nível de som em tempo real)
 
 
+@dataclass
+class MicrophoneDevice:
+    """Representa um microfone (dispositivo de captura) ativo no Windows."""
+
+    device_id: str
+    name: str
+    volume: float  # 0.0 a 1.0 (sensibilidade/ganho)
+    muted: bool
+
+
 class AudioBackend(ABC):
     """Interface abstrata para backends de áudio."""
 
@@ -69,6 +79,18 @@ class AudioBackend(ABC):
         """Leitura ultrarrápida dos medidores (master_peak, {app_id: peak})."""
 
     @abstractmethod
+    def list_microphones(self) -> List[MicrophoneDevice]:
+        """Lista todos os microfones ativos disponíveis e suas sensibilidades."""
+
+    @abstractmethod
+    def set_microphone_volume(self, device_id: str, volume: float) -> None:
+        """Define a sensibilidade/volume (0.0 a 1.0) do microfone."""
+
+    @abstractmethod
+    def set_microphone_mute(self, device_id: str, muted: bool) -> None:
+        """Ativa ou desativa o mudo do microfone."""
+
+    @abstractmethod
     def list_app_sessions(self) -> List[AppAudioSession]:
         """Lista todos os aplicativos com sessão de áudio ativa e atualiza o cache."""
 
@@ -85,6 +107,8 @@ class WindowsAudioBackend(AudioBackend):
     """Backend oficial otimizado para Windows usando WASAPI via pycaw com cache COM."""
 
     SYSTEM_SOUNDS_ID = "__system_sounds__"
+    E_CAPTURE = 1
+    DEVICE_STATE_ACTIVE = 1
 
     def __init__(self) -> None:
         if sys.platform != "win32":
@@ -110,8 +134,10 @@ class WindowsAudioBackend(AudioBackend):
         self._master = None
         self._master_meter = None
         self._device_name = "Saída Padrão"
-        # Cache: app_id -> lista de (SimpleAudioVolume, IAudioMeterInformation | None)
+        # Cache COM: app_id -> lista de (SimpleAudioVolume, IAudioMeterInformation | None)
         self._session_cache: Dict[str, list[tuple]] = {}
+        # Cache COM: mic_device_id -> IAudioEndpointVolume
+        self._mic_cache: Dict[str, object] = {}
         self._init_master_endpoint()
 
     def _init_master_endpoint(self) -> None:
@@ -198,6 +224,100 @@ class WindowsAudioBackend(AudioBackend):
             app_peaks[app_id] = best
         return master_peak, app_peaks
 
+    # ------------------------------------------------------------------
+    # Microfones (dispositivos de captura ativos)
+    # ------------------------------------------------------------------
+    def list_microphones(self) -> List[MicrophoneDevice]:
+        mics: List[MicrophoneDevice] = []
+        new_cache: Dict[str, object] = {}
+
+        try:
+            enumerator = self._AudioUtilities.GetDeviceEnumerator()
+            collection = enumerator.EnumAudioEndpoints(
+                self.E_CAPTURE, self.DEVICE_STATE_ACTIVE
+            )
+            count = collection.GetCount()
+
+            for i in range(count):
+                raw_dev = collection.Item(i)
+                try:
+                    dev_id = str(raw_dev.GetId())
+                except Exception:
+                    dev_id = f"mic_{i}"
+
+                name = f"Microfone {i + 1}"
+                try:
+                    wrapped = self._AudioUtilities.CreateDevice(raw_dev)
+                    if wrapped and getattr(wrapped, "FriendlyName", None):
+                        name = str(wrapped.FriendlyName)
+                except Exception:
+                    pass
+
+                try:
+                    iface = raw_dev.Activate(
+                        self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None
+                    )
+                    endpoint = self._cast(iface, self._POINTER(self._IAudioEndpointVolume))
+                    vol = clamp_volume(endpoint.GetMasterVolumeLevelScalar())
+                    muted = bool(endpoint.GetMute())
+                    new_cache[dev_id] = endpoint
+                    mics.append(
+                        MicrophoneDevice(
+                            device_id=dev_id,
+                            name=name,
+                            volume=vol,
+                            muted=muted,
+                        )
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        self._mic_cache = new_cache
+        return sorted(mics, key=lambda m: m.name.lower())
+
+    def set_microphone_volume(self, device_id: str, volume: float) -> None:
+        level = clamp_volume(volume)
+        endpoint = self._mic_cache.get(device_id)
+        if endpoint is None:
+            self.list_microphones()
+            endpoint = self._mic_cache.get(device_id)
+        if endpoint is None:
+            return
+        try:
+            endpoint.SetMasterVolumeLevelScalar(level, None)
+        except Exception:
+            self.list_microphones()
+            endpoint = self._mic_cache.get(device_id)
+            if endpoint is not None:
+                try:
+                    endpoint.SetMasterVolumeLevelScalar(level, None)
+                except Exception:
+                    pass
+
+    def set_microphone_mute(self, device_id: str, muted: bool) -> None:
+        val = 1 if muted else 0
+        endpoint = self._mic_cache.get(device_id)
+        if endpoint is None:
+            self.list_microphones()
+            endpoint = self._mic_cache.get(device_id)
+        if endpoint is None:
+            return
+        try:
+            endpoint.SetMute(val, None)
+        except Exception:
+            self.list_microphones()
+            endpoint = self._mic_cache.get(device_id)
+            if endpoint is not None:
+                try:
+                    endpoint.SetMute(val, None)
+                except Exception:
+                    pass
+
+    # ------------------------------------------------------------------
+    # Sessões de aplicativos
+    # ------------------------------------------------------------------
     def _query_meter(self, session):
         try:
             return session._ctl.QueryInterface(self._IAudioMeterInformation)
@@ -313,6 +433,10 @@ class DemoAudioBackend(AudioBackend):
     def __init__(self) -> None:
         self._master_volume = 0.75
         self._master_muted = False
+        self._mics: Dict[str, MicrophoneDevice] = {
+            "mic_1": MicrophoneDevice("mic_1", "Microfone USB (HyperX)", 0.80, False),
+            "mic_2": MicrophoneDevice("mic_2", "Microfone Integrado (Realtek)", 0.65, True),
+        }
         self._apps: Dict[str, AppAudioSession] = {
             "chrome.exe": AppAudioSession("chrome.exe", "Chrome", 0.80, False, [4120, 4188]),
             "spotify.exe": AppAudioSession("spotify.exe", "Spotify", 0.55, False, [6210]),
@@ -352,6 +476,23 @@ class DemoAudioBackend(AudioBackend):
                     (0.35 + 0.45 * abs(math.sin(t * (2.5 + idx)))) * a.volume
                 )
         return self.get_master_peak(), peaks
+
+    def list_microphones(self) -> List[MicrophoneDevice]:
+        return sorted(
+            [
+                MicrophoneDevice(m.device_id, m.name, m.volume, m.muted)
+                for m in self._mics.values()
+            ],
+            key=lambda m: m.name.lower(),
+        )
+
+    def set_microphone_volume(self, device_id: str, volume: float) -> None:
+        if device_id in self._mics:
+            self._mics[device_id].volume = clamp_volume(volume)
+
+    def set_microphone_mute(self, device_id: str, muted: bool) -> None:
+        if device_id in self._mics:
+            self._mics[device_id].muted = bool(muted)
 
     def list_app_sessions(self) -> List[AppAudioSession]:
         _, peaks = self.get_peaks()

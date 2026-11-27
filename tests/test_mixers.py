@@ -5,7 +5,9 @@ import tempfile
 import unittest
 
 from mixers.audio_backend import DemoAudioBackend, clamp_volume, format_app_name
+from mixers.hotkeys import MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, normalize_hotkey_label, parse_hotkey
 from mixers.profiles import ProfileManager
+from mixers.settings import SettingsManager
 from mixers.updater import is_newer_version, parse_version, select_exe_asset_url
 from mixers.windows_integration import compute_bottom_right_position, get_work_area
 
@@ -49,6 +51,14 @@ class TestDemoBackendAndProfiles(unittest.TestCase):
 
         x, y = compute_bottom_right_position(470, 660, (0, 0, 1920, 1032), margin=12)
         self.assertEqual((x, y), (1438, 360))
+
+        mics = {m.device_id: m for m in backend.list_microphones()}
+        self.assertIn("mic_1", mics)
+        backend.set_microphone_volume("mic_1", 0.45)
+        backend.set_microphone_mute("mic_1", True)
+        mics_after = {m.device_id: m for m in backend.list_microphones()}
+        self.assertAlmostEqual(mics_after["mic_1"].volume, 0.45)
+        self.assertTrue(mics_after["mic_1"].muted)
 
     def test_profile_save_apply_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,6 +104,29 @@ class TestAutoUpdater(unittest.TestCase):
         ]
         self.assertEqual(select_exe_asset_url(assets), "https://example/Mixers.exe")
         self.assertIsNone(select_exe_asset_url([]))
+
+
+class TestHotkeysAndSettings(unittest.TestCase):
+    def test_parse_and_normalize_hotkey(self) -> None:
+        parsed = parse_hotkey("ctrl+alt+m")
+        self.assertIsNotNone(parsed)
+        mods, vk = parsed
+        self.assertEqual(mods, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT)
+        self.assertEqual(vk, ord("M"))
+        self.assertEqual(normalize_hotkey_label("ctrl+alt+m"), "Ctrl+Alt+M")
+        self.assertIsNone(parse_hotkey("m"))  # precisa de modificador
+        self.assertIsNotNone(parse_hotkey("F9"))  # F-keys funcionam sozinhas
+
+    def test_settings_persistence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "settings.json"
+            s1 = SettingsManager(path=cfg)
+            s1.set("hotkey", "Ctrl+Shift+V")
+            s1.set("alpha", 0.85)
+
+            s2 = SettingsManager(path=cfg)
+            self.assertEqual(s2.get("hotkey"), "Ctrl+Shift+V")
+            self.assertAlmostEqual(s2.get("alpha"), 0.85)
 
 
 if __name__ == "__main__":

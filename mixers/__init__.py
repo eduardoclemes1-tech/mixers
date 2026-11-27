@@ -1,3 +1,3 @@
 """Mixers - Gerenciador de volume por aplicativo para Windows."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
