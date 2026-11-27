@@ -1,4 +1,4 @@
-"""Interface repaginada: fundo transparente, cards flutuantes discretos e controles 100% nítidos."""
+"""Interface minimalista inspirada no EarTrumpet / Windows 11 Fluent Violet."""
 
 from __future__ import annotations
 
@@ -23,6 +23,21 @@ from mixers.profiles import ProfileManager
 from mixers.settings import SettingsManager
 from mixers.tray import TrayController
 from mixers.updater import UpdateInfo, check_for_update, download_and_apply_update
+from mixers.widgets import (
+    ACCENT_PURPLE,
+    ACCENT_PURPLE_HOVER,
+    EarTrumpetSlider,
+    HEADER_BAND,
+    LIST_BAND,
+    MICS_BAND,
+    PANEL_BORDER,
+    PEAK_WHITE,
+    TEXT_MUTED,
+    TEXT_PRIMARY,
+    get_app_badge_icon,
+    get_mic_icon,
+    get_speaker_icon,
+)
 from mixers.windows_integration import (
     apply_windows_glass_style,
     compute_bottom_right_position,
@@ -31,33 +46,21 @@ from mixers.windows_integration import (
     set_autostart,
 )
 
-# Cor-chave escura para transparência real do fundo no Windows (sem halo claro nas bordas)
-CHROMA_KEY = "#010203"
-SOLID_BG = "#0B0E14"
-
-# Paleta clean e discreta (controles 100% nítidos)
-CARD_SURFACE = "#121722"
-CARD_INNER = "#0D111A"
-CARD_BORDER = "#263044"
-PILL_BG = "#1A2233"
-PILL_HOVER = "#26324A"
-ACCENT = "#38BDF8"
-ACCENT_HOVER = "#0EA5E9"
-MIC_ACCENT = "#34D399"
-MUTED_BG = "#7F1D2D"
-MUTED_HOVER = "#991B1B"
-TEXT_PRIMARY = "#F8FAFC"
-TEXT_SECONDARY = "#94A3B8"
+PILL_BG = "#2A2144"
+PILL_HOVER = "#3A2E5C"
+DANGER_BG = "#6E1D31"
+DANGER_HOVER = "#8B263E"
 
 
 class MixersApp(ctk.CTk):
-    """Painel flutuante clean com fundo transparente e controles nítidos no canto inferior direito."""
+    """Painel de áudio estilo EarTrumpet / Windows 11 no canto inferior direito."""
 
-    WINDOW_WIDTH = 368
-    WINDOW_HEIGHT = 576
+    WINDOW_WIDTH = 362
+    MIN_HEIGHT = 210
+    MAX_HEIGHT = 590
     SESSION_REFRESH_MS = 3000
-    METER_REFRESH_MS = 160
-    METER_EPSILON = 0.025
+    METER_REFRESH_MS = 140
+    METER_EPSILON = 0.02
 
     def __init__(
         self,
@@ -79,32 +82,29 @@ class MixersApp(ctk.CTk):
         ctk.set_default_color_theme("blue")
 
         # Preferências persistidas
-        self._transparent_bg = bool(self.settings.get("transparent_bg", True))
-        self._alpha = max(0.75, min(1.0, float(self.settings.get("alpha", 1.0))))
+        self._alpha = max(0.75, min(1.0, float(self.settings.get("alpha", 0.93))))
         self._mics_expanded = bool(self.settings.get("mics_expanded", True))
         saved_hotkey = str(self.settings.get("hotkey", "Ctrl+Alt+M"))
 
-        self._surface_bg = (
-            CHROMA_KEY if (self._transparent_bg and sys.platform == "win32") else SOLID_BG
-        )
-
         self.title(f"Mixers v{__version__}")
-        self.configure(fg_color=self._surface_bg)
+        self.configure(fg_color=LIST_BAND)
         self.resizable(False, False)
 
-        # Estado visual, animações e otimização
+        # Estado visual, animações e cache de desempenho
         self._pinned = False
         self._settings_open = False
         self._dialog_open = False
         self._recording_hotkey = False
         self._is_visible = not start_minimized
         self._anim_token = 0
+        self._cur_height = 360
         self._target_pos: tuple[int, int] = (0, 0)
 
         self._session_timer_id: str | None = None
         self._meter_timer_id: str | None = None
         self._last_slider_ts: float = 0.0
         self._last_master_pct: int = -1
+        self._last_master_muted: bool | None = None
         self._last_master_peak: float = -1.0
         self._last_app_pct: Dict[str, int] = {}
         self._last_app_peak: Dict[str, float] = {}
@@ -118,15 +118,12 @@ class MixersApp(ctk.CTk):
         self._mic_rows: Dict[str, dict] = {}
         self._current_mics: Dict[str, MicrophoneDevice] = {}
 
-        self._search_var = ctk.StringVar(value="")
-        self._search_var.trace_add("write", lambda *_: self._render_app_list(force_rebuild=True))
         self._selected_profile = ctk.StringVar(value="Sem perfis salvos")
         self._autostart_var = ctk.BooleanVar(value=is_autostart_enabled())
-        self._transparent_bg_var = ctk.BooleanVar(value=self._transparent_bg)
         self._pending_update: UpdateInfo | None = None
         self._updating = False
 
-        # Estilo flyout nativo do Windows (sem borda e sem ícone extra na barra de tarefas)
+        # Janela flutuante nativa do Windows (sem barra de título nem ícone na barra de tarefas)
         if sys.platform == "win32":
             self.overrideredirect(True)
             try:
@@ -134,10 +131,13 @@ class MixersApp(ctk.CTk):
             except Exception:
                 pass
         self.attributes("-topmost", True)
-        self._apply_transparency_mode()
+        try:
+            self.attributes("-alpha", self._alpha)
+        except Exception:
+            pass
 
         self._build_layout()
-        self._compute_and_set_position()
+        self._update_window_geometry()
         self._apply_native_window_effects()
 
         # Atalho global configurável pelo usuário
@@ -179,41 +179,31 @@ class MixersApp(ctk.CTk):
             self._animate_open()
             self._start_live_loops()
 
-        # Verifica atualização 3s após iniciar (em background)
         self.after(3000, lambda: self.check_updates_async(manual=False))
 
     # ------------------------------------------------------------------
-    # Transparência real do fundo + posicionamento fixo + animações
+    # Altura dinâmica compacta + posição fixa canto inferior direito
     # ------------------------------------------------------------------
-    def _apply_transparency_mode(self) -> None:
-        use_chroma = self._transparent_bg and sys.platform == "win32"
-        self._surface_bg = CHROMA_KEY if use_chroma else SOLID_BG
+    def _desired_height(self) -> int:
+        # Faixa Master (~92px) + Apps (~48px cada) + Microfones
+        h = 96
+        if self._pending_update is not None:
+            h += 38
+        if self._settings_open:
+            h += 210
 
-        try:
-            self.configure(fg_color=self._surface_bg)
-        except Exception:
-            pass
+        app_count = max(1, len(self._current_sessions))
+        h += min(app_count, 5) * 48 + 14
 
-        if sys.platform == "win32":
-            try:
-                self.wm_attributes("-transparentcolor", CHROMA_KEY if use_chroma else "")
-            except Exception:
-                pass
+        h += 40  # cabeçalho Microfones
+        if self._mics_expanded:
+            mic_count = max(1, len(self._current_mics))
+            h += min(mic_count, 3) * 48 + 8
 
-        try:
-            self.attributes("-alpha", self._alpha)
-        except Exception:
-            pass
+        return max(self.MIN_HEIGHT, min(self.MAX_HEIGHT, h))
 
-        if hasattr(self, "shell"):
-            self.shell.configure(
-                fg_color=self._surface_bg,
-                border_width=0 if use_chroma else 1,
-            )
-        if hasattr(self, "apps_scroll"):
-            self.apps_scroll.configure(fg_color=self._surface_bg)
-
-    def _compute_and_set_position(self, y_offset: int = 0) -> None:
+    def _update_window_geometry(self, y_offset: int = 0) -> None:
+        self._cur_height = self._desired_height()
         self.update_idletasks()
         try:
             scale = float(self._get_window_scaling())
@@ -221,25 +211,26 @@ class MixersApp(ctk.CTk):
             scale = 1.0
 
         win_w_px = int(round(self.WINDOW_WIDTH * scale))
-        win_h_px = int(round(self.WINDOW_HEIGHT * scale))
+        win_h_px = int(round(self._cur_height * scale))
         work_area = get_work_area(self.winfo_screenwidth(), self.winfo_screenheight())
         x, y = compute_bottom_right_position(win_w_px, win_h_px, work_area, margin=12)
         self._target_pos = (x, y)
-        self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{y + y_offset}")
+        self.geometry(f"{self.WINDOW_WIDTH}x{self._cur_height}+{x}+{y + y_offset}")
 
     def _animate_open(self) -> None:
-        """Animação sutil estilo Windows 11: desliza 14px para cima com fade-in (~120ms)."""
+        """Animação suave estilo Windows 11 (~120ms)."""
         self._anim_token += 1
         token = self._anim_token
         steps = 8
         slide_px = 14
         x, target_y = self._target_pos
+        h = self._cur_height
 
         try:
             self.attributes("-alpha", 0.0)
         except Exception:
             return
-        self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{target_y + slide_px}")
+        self.geometry(f"{self.WINDOW_WIDTH}x{h}+{x}+{target_y + slide_px}")
 
         def _step(i: int) -> None:
             if token != self._anim_token or not self._is_visible:
@@ -248,7 +239,7 @@ class MixersApp(ctk.CTk):
             eased = 1.0 - (1.0 - t) ** 3
             cur_y = int(round(target_y + slide_px * (1.0 - eased)))
             cur_alpha = round(self._alpha * eased, 3)
-            self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{cur_y}")
+            self.geometry(f"{self.WINDOW_WIDTH}x{h}+{x}+{cur_y}")
             try:
                 self.attributes("-alpha", cur_alpha)
             except Exception:
@@ -259,12 +250,13 @@ class MixersApp(ctk.CTk):
         _step(1)
 
     def _animate_close(self) -> None:
-        """Animação rápida e discreta ao recolher para a bandeja (~70ms)."""
+        """Animação discreta ao recolher (~70ms)."""
         self._anim_token += 1
         token = self._anim_token
         steps = 5
         slide_px = 10
         x, target_y = self._target_pos
+        h = self._cur_height
 
         def _step(i: int) -> None:
             if token != self._anim_token or self._is_visible:
@@ -272,7 +264,7 @@ class MixersApp(ctk.CTk):
             t = i / steps
             cur_y = int(round(target_y + slide_px * t))
             cur_alpha = max(0.0, round(self._alpha * (1.0 - t), 3))
-            self.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}+{x}+{cur_y}")
+            self.geometry(f"{self.WINDOW_WIDTH}x{h}+{x}+{cur_y}")
             try:
                 self.attributes("-alpha", cur_alpha)
             except Exception:
@@ -298,176 +290,200 @@ class MixersApp(ctk.CTk):
             pass
 
     # ------------------------------------------------------------------
-    # Layout Repaginado: Cards Flutuantes Discretos sobre Fundo Transparente
+    # Layout EarTrumpet / Windows 11 (2 tons de vidro escuro violeta)
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
-        use_chroma = self._transparent_bg and sys.platform == "win32"
-
         self.shell = ctk.CTkFrame(
             self,
-            fg_color=self._surface_bg,
-            border_color=CARD_BORDER,
-            border_width=0 if use_chroma else 1,
-            corner_radius=0 if use_chroma else 14,
+            fg_color=LIST_BAND,
+            border_color=PANEL_BORDER,
+            border_width=1,
+            corner_radius=12,
         )
         self.shell.pack(fill="both", expand=True)
         self.shell.grid_columnconfigure(0, weight=1)
-        self.shell.grid_rowconfigure(6, weight=1)
+        self.shell.grid_rowconfigure(3, weight=1)
 
-        # Row 0: Cabeçalho flutuante minimalista
-        header = ctk.CTkFrame(
+        # Row 0: Faixa Master / Dispositivo de Saída (violeta translúcido, igual à referência!)
+        master_band = ctk.CTkFrame(
             self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=12,
+            fg_color=HEADER_BAND,
+            corner_radius=10,
         )
-        header.grid(row=0, column=0, padx=6, pady=(6, 4), sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
+        master_band.grid(row=0, column=0, padx=1, pady=(1, 0), sticky="ew")
+        master_band.grid_columnconfigure(1, weight=1)
 
-        title_row = ctk.CTkFrame(header, fg_color="transparent")
-        title_row.grid(row=0, column=0, padx=(12, 6), pady=7, sticky="w")
-
-        ctk.CTkLabel(
-            title_row,
-            text="Mixers",
-            font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).pack(anchor="w")
+        # Linha 0 do Master: Nome do dispositivo + ícones discretos (⚙ e ⌄)
+        top_row = ctk.CTkFrame(master_band, fg_color="transparent")
+        top_row.grid(row=0, column=0, columnspan=3, padx=(14, 8), pady=(10, 4), sticky="ew")
+        top_row.grid_columnconfigure(0, weight=1)
 
         self.device_lbl = ctk.CTkLabel(
-            title_row,
-            text=self._truncate(self.backend.get_output_device_name(), 28),
-            font=ctk.CTkFont(size=10),
-            text_color=TEXT_SECONDARY,
+            top_row,
+            text=self._truncate(self.backend.get_output_device_name(), 34),
+            font=ctk.CTkFont(family="Segoe UI", size=13, weight="normal"),
+            text_color=TEXT_PRIMARY,
+            anchor="w",
         )
-        self.device_lbl.pack(anchor="w")
-
-        btn_group = ctk.CTkFrame(header, fg_color="transparent")
-        btn_group.grid(row=0, column=1, padx=(0, 8), pady=7, sticky="e")
-
-        self.pin_btn = ctk.CTkButton(
-            btn_group,
-            text="Fixar",
-            width=44,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=PILL_BG,
-            hover_color=PILL_HOVER,
-            text_color=TEXT_SECONDARY,
-            command=self._toggle_pin,
-        )
-        self.pin_btn.pack(side="left", padx=(0, 4))
+        self.device_lbl.grid(row=0, column=0, sticky="w")
 
         self.settings_btn = ctk.CTkButton(
-            btn_group,
-            text="Ajustes",
-            width=52,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=PILL_BG,
-            hover_color=PILL_HOVER,
-            text_color=TEXT_SECONDARY,
-            command=self._toggle_settings_drawer,
-        )
-        self.settings_btn.pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            btn_group,
-            text="—",
+            top_row,
+            text="⚙",
             width=26,
             height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=PILL_BG,
-            hover_color=PILL_HOVER,
-            text_color=TEXT_PRIMARY,
-            command=self.hide_to_tray,
-        ).pack(side="left")
+            corner_radius=6,
+            font=ctk.CTkFont(size=13),
+            fg_color="transparent",
+            hover_color="#412F6E",
+            text_color="#C9C1E0",
+            command=self._toggle_settings_drawer,
+        )
+        self.settings_btn.grid(row=0, column=1, padx=(4, 2))
 
-        # Row 1: Gaveta retrátil de Ajustes
+        ctk.CTkButton(
+            top_row,
+            text="⌄",
+            width=26,
+            height=24,
+            corner_radius=6,
+            font=ctk.CTkFont(size=15),
+            fg_color="transparent",
+            hover_color="#412F6E",
+            text_color="#C9C1E0",
+            command=self.hide_to_tray,
+        ).grid(row=0, column=2)
+
+        # Linha 1 do Master: [Ícone Alto-falante] [Slider EarTrumpet com barra branca] [100]
+        self.master_mute_btn = ctk.CTkButton(
+            master_band,
+            text="",
+            image=get_speaker_icon(muted=False, size=24),
+            width=34,
+            height=34,
+            corner_radius=8,
+            fg_color="transparent",
+            hover_color="#412F6E",
+            command=self._toggle_master_mute,
+        )
+        self.master_mute_btn.grid(row=1, column=0, padx=(10, 6), pady=(2, 12))
+
+        self.master_slider = EarTrumpetSlider(
+            master_band,
+            bg_color=HEADER_BAND,
+            value=100,
+            muted=False,
+            on_change=self._on_master_slider,
+            height=30,
+        )
+        self.master_slider.grid(row=1, column=1, padx=4, pady=(2, 12), sticky="ew")
+
+        self.master_pct_lbl = ctk.CTkLabel(
+            master_band,
+            text="100",
+            width=36,
+            anchor="e",
+            font=ctk.CTkFont(family="Segoe UI", size=17, weight="normal"),
+            text_color=TEXT_PRIMARY,
+        )
+        self.master_pct_lbl.grid(row=1, column=2, padx=(4, 14), pady=(2, 12))
+
+        # Row 1: Banner de atualização disponível (oculto até haver versão nova)
+        self.update_banner = ctk.CTkFrame(
+            self.shell,
+            fg_color="#231942",
+            border_color=ACCENT_PURPLE,
+            border_width=1,
+            corner_radius=8,
+        )
+        self.update_banner.grid_columnconfigure(0, weight=1)
+
+        self.update_banner_lbl = ctk.CTkLabel(
+            self.update_banner,
+            text="Nova versão disponível!",
+            font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"),
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+        )
+        self.update_banner_lbl.grid(row=0, column=0, padx=10, pady=6, sticky="w")
+
+        self.update_now_btn = ctk.CTkButton(
+            self.update_banner,
+            text="Atualizar",
+            width=74,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=ACCENT_PURPLE,
+            hover_color=ACCENT_PURPLE_HOVER,
+            text_color="#FFFFFF",
+            command=self._start_update_download,
+        )
+        self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=6)
+
+        # Row 2: Gaveta de Ajustes (oculta no uso normal — abre ao clicar em ⚙)
         self.settings_drawer = ctk.CTkFrame(
             self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=12,
+            fg_color="#1F1933",
+            corner_radius=0,
         )
         self.settings_drawer.grid_columnconfigure(1, weight=1)
 
-        self.transparent_bg_switch = ctk.CTkSwitch(
-            self.settings_drawer,
-            text="Fundo transparente (cards flutuantes)",
-            variable=self._transparent_bg_var,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            progress_color=ACCENT,
-            command=self._on_transparent_bg_switch,
-        )
-        self.transparent_bg_switch.grid(
-            row=0, column=0, columnspan=3, padx=12, pady=(10, 4), sticky="w"
-        )
-
+        # Transparência
         ctk.CTkLabel(
             self.settings_drawer,
-            text="Opacidade cards",
+            text="Opacidade",
             font=ctk.CTkFont(size=11),
-            text_color=TEXT_SECONDARY,
-        ).grid(row=1, column=0, padx=(12, 6), pady=(2, 4), sticky="w")
+            text_color=TEXT_MUTED,
+        ).grid(row=0, column=0, padx=(14, 6), pady=(10, 4), sticky="w")
 
-        self.alpha_slider = ctk.CTkSlider(
+        self.alpha_slider = EarTrumpetSlider(
             self.settings_drawer,
-            from_=75,
-            to=100,
-            number_of_steps=25,
-            height=14,
-            progress_color=ACCENT,
-            button_color=TEXT_PRIMARY,
-            button_hover_color=ACCENT,
-            command=self._on_alpha_change,
+            bg_color="#1F1933",
+            value=int(round(self._alpha * 100)),
+            on_change=self._on_alpha_change,
+            height=22,
         )
-        self.alpha_slider.set(int(round(self._alpha * 100)))
-        self.alpha_slider.grid(row=1, column=1, padx=4, pady=(2, 4), sticky="ew")
+        self.alpha_slider.grid(row=0, column=1, padx=4, pady=(10, 4), sticky="ew")
 
         self.alpha_lbl = ctk.CTkLabel(
             self.settings_drawer,
             text=f"{int(round(self._alpha * 100))}%",
             width=36,
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(size=11),
             text_color=TEXT_PRIMARY,
         )
-        self.alpha_lbl.grid(row=1, column=2, padx=(4, 10), pady=(2, 4))
+        self.alpha_lbl.grid(row=0, column=2, padx=(4, 12), pady=(10, 4))
 
         # Atalho global
         hk_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        hk_row.grid(row=2, column=0, columnspan=3, padx=10, pady=(2, 6), sticky="ew")
+        hk_row.grid(row=1, column=0, columnspan=3, padx=12, pady=(2, 6), sticky="ew")
 
         ctk.CTkLabel(
             hk_row,
             text="Atalho:",
             font=ctk.CTkFont(size=11),
-            text_color=TEXT_SECONDARY,
+            text_color=TEXT_MUTED,
         ).pack(side="left", padx=(2, 6))
 
         self.hotkey_badge = ctk.CTkLabel(
             hk_row,
             text="Ctrl+Alt+M",
             font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=ACCENT,
-            fg_color=CARD_INNER,
+            text_color="#C4B5FD",
+            fg_color=LIST_BAND,
             corner_radius=6,
             padx=8,
             pady=2,
         )
-        self.hotkey_badge.pack(side="left", padx=(0, 6))
+        self.hotkey_badge.pack(side="left")
 
         self.record_hotkey_btn = ctk.CTkButton(
             hk_row,
             text="Gravar",
-            width=60,
-            height=23,
-            corner_radius=7,
+            width=58,
+            height=22,
+            corner_radius=6,
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color=PILL_BG,
             hover_color=PILL_HOVER,
@@ -478,61 +494,105 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             hk_row,
             text="Limpar",
-            width=50,
-            height=23,
-            corner_radius=7,
+            width=48,
+            height=22,
+            corner_radius=6,
             font=ctk.CTkFont(size=10),
             fg_color="transparent",
-            hover_color=MUTED_BG,
-            text_color=TEXT_SECONDARY,
+            hover_color=DANGER_BG,
+            text_color=TEXT_MUTED,
             command=self._clear_hotkey,
         ).pack(side="right")
 
-        self.autostart_switch = ctk.CTkSwitch(
-            self.settings_drawer,
-            text="Iniciar com o Windows",
-            variable=self._autostart_var,
-            font=ctk.CTkFont(size=11),
-            progress_color=ACCENT,
-            command=self._on_autostart_switch,
-        )
-        self.autostart_switch.grid(
-            row=3, column=0, columnspan=3, padx=12, pady=(2, 6), sticky="w"
-        )
+        # Presets rápidos + Fixar
+        quick_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
+        quick_row.grid(row=2, column=0, columnspan=3, padx=12, pady=(0, 6), sticky="ew")
 
+        ctk.CTkButton(
+            quick_row,
+            text="100% Tudo",
+            width=72,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
+            command=self._preset_full_volume,
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            quick_row,
+            text="Foco 30%",
+            width=66,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
+            command=self._preset_focus_mode,
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            quick_row,
+            text="Mutar Apps",
+            width=72,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=DANGER_BG,
+            hover_color=DANGER_HOVER,
+            command=self._preset_mute_all_apps,
+        ).pack(side="left", padx=(0, 4))
+
+        self.pin_btn = ctk.CTkButton(
+            quick_row,
+            text="Fixar",
+            width=48,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10),
+            fg_color=PILL_BG,
+            hover_color=PILL_HOVER,
+            text_color=TEXT_MUTED,
+            command=self._toggle_pin,
+        )
+        self.pin_btn.pack(side="right")
+
+        # Perfis
         prof_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        prof_row.grid(row=4, column=0, columnspan=3, padx=10, pady=(2, 6), sticky="ew")
+        prof_row.grid(row=3, column=0, columnspan=3, padx=12, pady=(0, 6), sticky="ew")
 
         self.profile_menu = ctk.CTkOptionMenu(
             prof_row,
             variable=self._selected_profile,
             values=self._get_profile_options(),
-            width=136,
-            height=24,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_INNER,
+            width=142,
+            height=23,
+            font=ctk.CTkFont(size=10),
+            fg_color=LIST_BAND,
             button_color=PILL_BG,
-            button_hover_color=ACCENT,
+            button_hover_color=ACCENT_PURPLE,
         )
         self.profile_menu.pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             prof_row,
             text="Aplicar",
-            width=52,
-            height=24,
+            width=50,
+            height=23,
+            corner_radius=6,
             font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
-            text_color="#0B1120",
+            fg_color=ACCENT_PURPLE,
+            hover_color=ACCENT_PURPLE_HOVER,
             command=self._apply_selected_profile,
         ).pack(side="left", padx=(0, 4))
 
         ctk.CTkButton(
             prof_row,
             text="Salvar",
-            width=48,
-            height=24,
+            width=46,
+            height=23,
+            corner_radius=6,
             font=ctk.CTkFont(size=10),
             fg_color=PILL_BG,
             hover_color=PILL_HOVER,
@@ -542,284 +602,131 @@ class MixersApp(ctk.CTk):
         ctk.CTkButton(
             prof_row,
             text="X",
-            width=26,
-            height=24,
+            width=24,
+            height=23,
+            corner_radius=6,
             font=ctk.CTkFont(size=10, weight="bold"),
             fg_color=PILL_BG,
-            hover_color=MUTED_BG,
+            hover_color=DANGER_BG,
             command=self._delete_selected_profile,
         ).pack(side="left")
 
-        upd_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
-        upd_row.grid(row=5, column=0, columnspan=3, padx=10, pady=(0, 9), sticky="ew")
+        # Autostart + Update + Sair
+        sys_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
+        sys_row.grid(row=4, column=0, columnspan=3, padx=12, pady=(0, 4), sticky="ew")
 
-        ctk.CTkLabel(
-            upd_row,
-            text=f"Versão v{__version__}",
+        self.autostart_switch = ctk.CTkSwitch(
+            sys_row,
+            text="Iniciar com Windows",
+            variable=self._autostart_var,
+            font=ctk.CTkFont(size=11),
+            progress_color=ACCENT_PURPLE,
+            command=self._on_autostart_switch,
+        )
+        self.autostart_switch.pack(side="left")
+
+        ctk.CTkButton(
+            sys_row,
+            text="Sair",
+            width=44,
+            height=22,
+            corner_radius=6,
             font=ctk.CTkFont(size=10),
-            text_color=TEXT_SECONDARY,
-        ).pack(side="left", padx=(2, 0))
+            fg_color="transparent",
+            hover_color=DANGER_BG,
+            text_color=TEXT_MUTED,
+            command=self.quit_app,
+        ).pack(side="right")
 
-        self.check_update_btn = ctk.CTkButton(
+        upd_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
+        upd_row.grid(row=5, column=0, columnspan=3, padx=12, pady=(0, 8), sticky="ew")
+
+        self.status_lbl = ctk.CTkLabel(
             upd_row,
-            text="Verificar atualização",
-            width=130,
-            height=23,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
+            text=f"Mixers v{__version__}",
+            anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color=TEXT_MUTED,
+        )
+        self.status_lbl.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(
+            upd_row,
+            text="Atualizações",
+            width=82,
+            height=22,
+            corner_radius=6,
+            font=ctk.CTkFont(size=10),
             fg_color=PILL_BG,
             hover_color=PILL_HOVER,
             command=lambda: self.check_updates_async(manual=True),
-        )
-        self.check_update_btn.pack(side="right")
+        ).pack(side="right")
 
-        # Row 2: Banner de atualização disponível (oculto por padrão)
-        self.update_banner = ctk.CTkFrame(
+        # Row 3: Lista limpa de Aplicativos (faixa escura igual à referência!)
+        self.apps_scroll = ctk.CTkScrollableFrame(
             self.shell,
-            fg_color="#0C2D48",
-            border_color=ACCENT,
-            border_width=1,
-            corner_radius=11,
+            fg_color=LIST_BAND,
+            scrollbar_button_color="#2D2448",
+            scrollbar_button_hover_color="#46396E",
+            corner_radius=0,
         )
-        self.update_banner.grid_columnconfigure(0, weight=1)
+        self.apps_scroll.grid(row=3, column=0, padx=2, pady=(4, 2), sticky="nsew")
+        self.apps_scroll.grid_columnconfigure(0, weight=1)
 
-        self.update_banner_lbl = ctk.CTkLabel(
-            self.update_banner,
-            text="Nova versão disponível!",
-            font=ctk.CTkFont(size=11, weight="bold"),
-            text_color=TEXT_PRIMARY,
-            anchor="w",
-        )
-        self.update_banner_lbl.grid(row=0, column=0, padx=10, pady=6, sticky="w")
-
-        self.update_now_btn = ctk.CTkButton(
-            self.update_banner,
-            text="Atualizar",
-            width=78,
-            height=23,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=ACCENT,
-            hover_color=ACCENT_HOVER,
-            text_color="#0B1120",
-            command=self._start_update_download,
-        )
-        self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=6)
-
-        # Row 3: Card Volume Geral (Master)
-        master_card = ctk.CTkFrame(
+        # Row 4: Faixa de Microfones (mesmo estilo 2-tons da referência!)
+        mics_header = ctk.CTkFrame(
             self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=12,
+            fg_color=MICS_BAND,
+            corner_radius=0,
         )
-        master_card.grid(row=3, column=0, padx=6, pady=(0, 4), sticky="ew")
-        master_card.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(
-            master_card,
-            text="Volume Geral",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=TEXT_PRIMARY,
-        ).grid(row=0, column=0, columnspan=2, padx=11, pady=(8, 1), sticky="w")
-
-        self.master_pct_lbl = ctk.CTkLabel(
-            master_card,
-            text="100%",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=ACCENT,
-        )
-        self.master_pct_lbl.grid(row=0, column=2, padx=11, pady=(8, 1), sticky="e")
-
-        self.master_mute_btn = ctk.CTkButton(
-            master_card,
-            text="Som",
-            width=48,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            command=self._toggle_master_mute,
-        )
-        self.master_mute_btn.grid(row=1, column=0, padx=(11, 8), pady=(3, 5))
-
-        self.master_slider = ctk.CTkSlider(
-            master_card,
-            from_=0,
-            to=100,
-            number_of_steps=100,
-            height=15,
-            progress_color=ACCENT,
-            button_color=TEXT_PRIMARY,
-            button_hover_color=ACCENT,
-            command=self._on_master_slider,
-        )
-        self.master_slider.grid(row=1, column=1, columnspan=2, padx=(0, 11), pady=(3, 5), sticky="ew")
-
-        self.master_meter = ctk.CTkProgressBar(
-            master_card,
-            height=3,
-            corner_radius=2,
-            fg_color=CARD_INNER,
-            progress_color=ACCENT,
-        )
-        self.master_meter.set(0)
-        self.master_meter.grid(row=2, column=0, columnspan=3, padx=11, pady=(0, 8), sticky="ew")
-
-        # Row 4: Card de Microfones
-        self.mics_card = ctk.CTkFrame(
-            self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=12,
-        )
-        self.mics_card.grid(row=4, column=0, padx=6, pady=(0, 4), sticky="ew")
-        self.mics_card.grid_columnconfigure(0, weight=1)
-
-        mics_header = ctk.CTkFrame(self.mics_card, fg_color="transparent")
-        mics_header.grid(row=0, column=0, padx=6, pady=(4, 2), sticky="ew")
+        mics_header.grid(row=4, column=0, padx=1, pady=(2, 0), sticky="ew")
         mics_header.grid_columnconfigure(0, weight=1)
 
         self.mics_toggle_btn = ctk.CTkButton(
             mics_header,
-            text="Microfones (0)  ▾",
+            text="Microfones",
             anchor="w",
-            height=25,
-            corner_radius=8,
-            font=ctk.CTkFont(size=12, weight="bold"),
+            height=30,
+            corner_radius=0,
+            font=ctk.CTkFont(family="Segoe UI", size=12, weight="normal"),
             fg_color="transparent",
-            hover_color=PILL_BG,
+            hover_color="#332559",
             text_color=TEXT_PRIMARY,
             command=self._toggle_mics_section,
         )
-        self.mics_toggle_btn.grid(row=0, column=0, sticky="ew")
+        self.mics_toggle_btn.grid(row=0, column=0, padx=(8, 4), pady=2, sticky="ew")
 
         self.mic_test_btn = ctk.CTkButton(
             mics_header,
             text="Testar",
-            width=56,
+            width=54,
             height=22,
-            corner_radius=7,
+            corner_radius=6,
             font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color="#132A23",
-            hover_color="#1E3F35",
-            text_color=MIC_ACCENT,
+            fg_color="#382863",
+            hover_color=ACCENT_PURPLE,
+            text_color=TEXT_PRIMARY,
             command=self._toggle_mic_test,
         )
-        self.mic_test_btn.grid(row=0, column=1, padx=(4, 4), sticky="e")
+        self.mic_test_btn.grid(row=0, column=1, padx=(0, 4), pady=2)
 
-        self.mics_body = ctk.CTkFrame(self.mics_card, fg_color="transparent")
+        self.mics_arrow_lbl = ctk.CTkLabel(
+            mics_header,
+            text="⌄" if self._mics_expanded else "›",
+            width=22,
+            font=ctk.CTkFont(size=14),
+            text_color="#C9C1E0",
+        )
+        self.mics_arrow_lbl.grid(row=0, column=2, padx=(0, 10), pady=2)
+        self.mics_arrow_lbl.bind("<Button-1>", lambda _e: self._toggle_mics_section())
+
+        self.mics_body = ctk.CTkFrame(self.shell, fg_color=LIST_BAND, corner_radius=8)
         self.mics_body.grid_columnconfigure(0, weight=1)
         if self._mics_expanded:
-            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 7), sticky="ew")
-
-        # Row 5: Barra compacta flutuante de ações rápidas + busca
-        quick_card = ctk.CTkFrame(
-            self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=11,
-        )
-        quick_card.grid(row=5, column=0, padx=6, pady=(0, 4), sticky="ew")
-
-        quick_row = ctk.CTkFrame(quick_card, fg_color="transparent")
-        quick_row.pack(fill="x", padx=6, pady=5)
-
-        ctk.CTkButton(
-            quick_row,
-            text="100%",
-            width=44,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=PILL_BG,
-            hover_color=PILL_HOVER,
-            command=self._preset_full_volume,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            quick_row,
-            text="Foco",
-            width=46,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=PILL_BG,
-            hover_color=PILL_HOVER,
-            command=self._preset_focus_mode,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            quick_row,
-            text="Mutar",
-            width=48,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=MUTED_BG,
-            hover_color=MUTED_HOVER,
-            command=self._preset_mute_all_apps,
-        ).pack(side="left", padx=(0, 6))
-
-        self.search_entry = ctk.CTkEntry(
-            quick_row,
-            placeholder_text="Filtrar app...",
-            textvariable=self._search_var,
-            height=24,
-            corner_radius=7,
-            font=ctk.CTkFont(size=11),
-            fg_color=CARD_INNER,
-            border_color=CARD_BORDER,
-        )
-        self.search_entry.pack(side="right", fill="x", expand=True)
-
-        # Row 6: Lista rolável de cards flutuantes (fundo transparente entre os cards)
-        self.apps_scroll = ctk.CTkScrollableFrame(
-            self.shell,
-            fg_color=self._surface_bg,
-            scrollbar_button_color=CARD_BORDER,
-            scrollbar_button_hover_color="#3B4A66",
-        )
-        self.apps_scroll.grid(row=6, column=0, padx=2, pady=(0, 4), sticky="nsew")
-        self.apps_scroll.grid_columnconfigure(0, weight=1)
-
-        # Row 7: Rodapé flutuante discreto
-        footer = ctk.CTkFrame(
-            self.shell,
-            fg_color=CARD_SURFACE,
-            border_color=CARD_BORDER,
-            border_width=1,
-            corner_radius=10,
-        )
-        footer.grid(row=7, column=0, padx=6, pady=(0, 6), sticky="ew")
-        footer.grid_columnconfigure(0, weight=1)
-
-        self.status_lbl = ctk.CTkLabel(
-            footer,
-            text="Pronto • segundo plano ativo",
-            anchor="w",
-            font=ctk.CTkFont(size=10),
-            text_color=TEXT_SECONDARY,
-        )
-        self.status_lbl.grid(row=0, column=0, padx=(10, 4), pady=5, sticky="w")
-
-        ctk.CTkButton(
-            footer,
-            text="Sair",
-            width=38,
-            height=20,
-            corner_radius=6,
-            font=ctk.CTkFont(size=10),
-            fg_color="transparent",
-            hover_color=MUTED_BG,
-            text_color=TEXT_SECONDARY,
-            command=self.quit_app,
-        ).grid(row=0, column=1, padx=(0, 6), pady=4, sticky="e")
+            self.mics_body.grid(row=5, column=0, padx=2, pady=(2, 6), sticky="ew")
 
     # ------------------------------------------------------------------
-    # Timers (0% CPU quando oculto)
+    # Timers (0% CPU quando oculto na bandeja)
     # ------------------------------------------------------------------
     def _start_live_loops(self) -> None:
         self._stop_live_loops()
@@ -846,7 +753,7 @@ class MixersApp(ctk.CTk):
             self._meter_timer_id = None
 
     # ------------------------------------------------------------------
-    # Visibilidade e Bandeja (Segundo Plano)
+    # Visibilidade e Bandeja
     # ------------------------------------------------------------------
     def toggle_visibility(self) -> None:
         if self._is_visible:
@@ -856,11 +763,11 @@ class MixersApp(ctk.CTk):
 
     def show_from_tray(self) -> None:
         self._is_visible = True
-        self._compute_and_set_position(y_offset=14)
+        self.refresh_audio_state(force_rebuild=False)
+        self._update_window_geometry(y_offset=14)
         self.deiconify()
         self.lift()
         self.focus_force()
-        self.refresh_audio_state(force_rebuild=False)
         self._animate_open()
         self._start_live_loops()
 
@@ -900,7 +807,7 @@ class MixersApp(ctk.CTk):
         self.destroy()
 
     # ------------------------------------------------------------------
-    # Atualização ultrarrápida (cache COM + delta threshold)
+    # Atualização ultrarrápida (cache COM + medidor integrado no slider)
     # ------------------------------------------------------------------
     def _schedule_session_refresh(self) -> None:
         self._session_timer_id = None
@@ -930,7 +837,7 @@ class MixersApp(ctk.CTk):
 
         if abs(master_peak - self._last_master_peak) >= self.METER_EPSILON:
             self._last_master_peak = master_peak
-            self.master_meter.set(master_peak)
+            self.master_slider.set_peak(master_peak, PEAK_WHITE)
 
         for app_id, row in self._app_rows.items():
             session = self._current_sessions.get(app_id)
@@ -938,23 +845,20 @@ class MixersApp(ctk.CTk):
             prev = self._last_app_peak.get(app_id, -1.0)
             if abs(peak - prev) >= self.METER_EPSILON:
                 self._last_app_peak[app_id] = peak
-                row["meter"].set(peak)
+                row["slider"].set_peak(peak, PEAK_WHITE)
 
         if self._mics_expanded:
             for dev_id, row in self._mic_rows.items():
                 mic = self._current_mics.get(dev_id)
                 muted = bool(mic.muted) if mic else False
                 peak = 0.0 if muted else mic_peaks.get(dev_id, 0.0)
-                prev = self._last_mic_peak.get(dev_id, -1.0)
-                if abs(peak - prev) >= self.METER_EPSILON:
-                    self._last_mic_peak[dev_id] = peak
-                    row["meter"].set(peak)
-
                 label, color = classify_mic_quality(peak, muted=muted)
-                if self._last_mic_quality.get(dev_id) != label:
+                prev = self._last_mic_peak.get(dev_id, -1.0)
+                if abs(peak - prev) >= self.METER_EPSILON or self._last_mic_quality.get(dev_id) != label:
+                    self._last_mic_peak[dev_id] = peak
                     self._last_mic_quality[dev_id] = label
+                    row["slider"].set_peak(peak, color)
                     row["quality_lbl"].configure(text=label, text_color=color)
-                    row["meter"].configure(progress_color=color)
 
     def refresh_audio_state(self, force_rebuild: bool = False) -> None:
         try:
@@ -967,229 +871,36 @@ class MixersApp(ctk.CTk):
             self._set_status(f"Erro de áudio: {exc}")
             return
 
-        self.device_lbl.configure(text=self._truncate(dev_name, 30))
+        self.device_lbl.configure(text=self._truncate(dev_name, 34))
         if master_vol != self._last_master_pct:
             self._last_master_pct = master_vol
-            self.master_slider.set(master_vol)
-            self.master_pct_lbl.configure(text=f"{master_vol}%")
-        self._style_mute_button(self.master_mute_btn, master_muted)
+            self.master_slider.set_value(master_vol)
+            self.master_pct_lbl.configure(text=str(master_vol))
+        if master_muted != self._last_master_muted:
+            self._last_master_muted = master_muted
+            self._apply_master_mute_visual(master_muted)
 
-        # Microfones
         new_mics = {m.device_id: m for m in mics}
         mics_changed = list(new_mics.keys()) != list(self._current_mics.keys())
         self._current_mics = new_mics
-        arrow = "▾" if self._mics_expanded else "▸"
-        self.mics_toggle_btn.configure(text=f"Microfones ({len(mics)})  {arrow}")
         if force_rebuild or mics_changed:
             self._render_microphones()
         else:
             self._sync_existing_mics()
 
-        # Aplicativos
         new_map = {s.app_id: s for s in sessions}
         keys_changed = list(new_map.keys()) != list(self._current_sessions.keys())
         self._current_sessions = new_map
-
         if force_rebuild or keys_changed:
             self._render_app_list(force_rebuild=True)
         else:
             self._sync_existing_rows()
 
-        hk = self.hotkey_manager.current_hotkey
-        hk_hint = f" • {hk}" if hk else ""
-        self._set_status(f"{len(sessions)} app(s) • {len(mics)} mic(s){hk_hint}")
+        if (mics_changed or keys_changed) and self._is_visible:
+            self._update_window_geometry()
 
     # ------------------------------------------------------------------
-    # Microfones (Sensibilidade, Mudo & Medidor de Voz)
-    # ------------------------------------------------------------------
-    def _toggle_mic_test(self) -> None:
-        if self._mic_monitor.active:
-            self._stop_mic_test()
-            self._set_status("Teste de microfone parado.")
-        else:
-            if not self._mics_expanded:
-                self._toggle_mics_section()
-            if self._mic_monitor.start():
-                self.mic_test_btn.configure(
-                    text="Parar",
-                    fg_color=MUTED_BG,
-                    hover_color=MUTED_HOVER,
-                    text_color=TEXT_PRIMARY,
-                )
-                self._set_status("Fale no microfone para ver o nível de captação.")
-            else:
-                self._set_status("Não foi possível iniciar o teste de microfone.")
-
-    def _stop_mic_test(self) -> None:
-        if self._mic_monitor.active:
-            self._mic_monitor.stop()
-        if hasattr(self, "mic_test_btn"):
-            self.mic_test_btn.configure(
-                text="Testar",
-                fg_color="#132A23",
-                hover_color="#1E3F35",
-                text_color=MIC_ACCENT,
-            )
-
-    def _toggle_mics_section(self) -> None:
-        self._mics_expanded = not self._mics_expanded
-        self.settings.set("mics_expanded", self._mics_expanded)
-        arrow = "▾" if self._mics_expanded else "▸"
-        self.mics_toggle_btn.configure(
-            text=f"Microfones ({len(self._current_mics)})  {arrow}"
-        )
-        if self._mics_expanded:
-            self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 7), sticky="ew")
-        else:
-            self._stop_mic_test()
-            self.mics_body.grid_forget()
-
-    def _render_microphones(self) -> None:
-        for child in self.mics_body.winfo_children():
-            child.destroy()
-        self._mic_rows.clear()
-        self._last_mic_pct.clear()
-        self._last_mic_peak.clear()
-        self._last_mic_quality.clear()
-
-        if not self._current_mics:
-            ctk.CTkLabel(
-                self.mics_body,
-                text="Nenhum microfone ativo detectado.",
-                font=ctk.CTkFont(size=11),
-                text_color=TEXT_SECONDARY,
-            ).grid(row=0, column=0, padx=6, pady=6, sticky="w")
-            return
-
-        for idx, mic in enumerate(self._current_mics.values()):
-            row_frame = ctk.CTkFrame(
-                self.mics_body,
-                fg_color=CARD_INNER,
-                corner_radius=9,
-            )
-            row_frame.grid(row=idx, column=0, pady=2, sticky="ew")
-            row_frame.grid_columnconfigure(1, weight=1)
-
-            vol_pct = int(round(mic.volume * 100))
-            self._last_mic_pct[mic.device_id] = vol_pct
-            init_peak = 0.0 if mic.muted else mic.peak_level
-            q_label, q_color = classify_mic_quality(init_peak, muted=mic.muted)
-            self._last_mic_peak[mic.device_id] = init_peak
-            self._last_mic_quality[mic.device_id] = q_label
-
-            ctk.CTkLabel(
-                row_frame,
-                text=self._truncate(mic.name, 21),
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=TEXT_PRIMARY,
-                anchor="w",
-            ).grid(row=0, column=0, columnspan=2, padx=8, pady=(5, 1), sticky="w")
-
-            right_meta = ctk.CTkFrame(row_frame, fg_color="transparent")
-            right_meta.grid(row=0, column=2, padx=8, pady=(5, 1), sticky="e")
-
-            quality_lbl = ctk.CTkLabel(
-                right_meta,
-                text=q_label,
-                font=ctk.CTkFont(size=10, weight="bold"),
-                text_color=q_color,
-            )
-            quality_lbl.pack(side="left", padx=(0, 6))
-
-            pct_lbl = ctk.CTkLabel(
-                right_meta,
-                text=f"{vol_pct}%",
-                font=ctk.CTkFont(size=11, weight="bold"),
-                text_color=TEXT_SECONDARY if mic.muted else MIC_ACCENT,
-            )
-            pct_lbl.pack(side="left")
-
-            mute_btn = ctk.CTkButton(
-                row_frame,
-                text="Mudo" if mic.muted else "Mic",
-                width=44,
-                height=21,
-                corner_radius=6,
-                font=ctk.CTkFont(size=10, weight="bold"),
-                command=lambda did=mic.device_id: self._toggle_mic_mute(did),
-            )
-            self._style_mic_mute_button(mute_btn, mic.muted)
-            mute_btn.grid(row=1, column=0, padx=(8, 6), pady=(2, 4))
-
-            slider = ctk.CTkSlider(
-                row_frame,
-                from_=0,
-                to=100,
-                number_of_steps=100,
-                height=14,
-                progress_color=MIC_ACCENT,
-                button_color=TEXT_PRIMARY,
-                button_hover_color=MIC_ACCENT,
-                command=lambda val, did=mic.device_id: self._on_mic_slider(did, val),
-            )
-            slider.set(vol_pct)
-            slider.grid(row=1, column=1, columnspan=2, padx=(0, 8), pady=(2, 4), sticky="ew")
-
-            meter = ctk.CTkProgressBar(
-                row_frame,
-                height=3,
-                corner_radius=2,
-                fg_color="#172033",
-                progress_color=q_color,
-            )
-            meter.set(init_peak)
-            meter.grid(row=2, column=0, columnspan=3, padx=8, pady=(0, 6), sticky="ew")
-
-            self._mic_rows[mic.device_id] = {
-                "mute_btn": mute_btn,
-                "slider": slider,
-                "pct_lbl": pct_lbl,
-                "quality_lbl": quality_lbl,
-                "meter": meter,
-            }
-
-    def _sync_existing_mics(self) -> None:
-        for dev_id, widgets in self._mic_rows.items():
-            mic = self._current_mics.get(dev_id)
-            if not mic:
-                continue
-            vol_pct = int(round(mic.volume * 100))
-            if vol_pct != self._last_mic_pct.get(dev_id):
-                self._last_mic_pct[dev_id] = vol_pct
-                widgets["slider"].set(vol_pct)
-                widgets["pct_lbl"].configure(text=f"{vol_pct}%")
-            widgets["pct_lbl"].configure(
-                text_color=TEXT_SECONDARY if mic.muted else MIC_ACCENT
-            )
-            self._style_mic_mute_button(widgets["mute_btn"], mic.muted)
-
-    def _on_mic_slider(self, device_id: str, value: float) -> None:
-        pct = int(round(value))
-        self._last_slider_ts = time.monotonic()
-        if pct == self._last_mic_pct.get(device_id):
-            return
-        self._last_mic_pct[device_id] = pct
-        if device_id in self._mic_rows:
-            self._mic_rows[device_id]["pct_lbl"].configure(text=f"{pct}%")
-        self.backend.set_microphone_volume(device_id, pct / 100.0)
-        if device_id in self._current_mics:
-            self._current_mics[device_id].volume = pct / 100.0
-
-    def _toggle_mic_mute(self, device_id: str) -> None:
-        mic = self._current_mics.get(device_id)
-        if not mic:
-            return
-        new_state = not mic.muted
-        self.backend.set_microphone_mute(device_id, new_state)
-        mic.muted = new_state
-        if device_id in self._mic_rows:
-            self._style_mic_mute_button(self._mic_rows[device_id]["mute_btn"], new_state)
-            self._mic_rows[device_id]["pct_lbl"].configure(
-                text_color=TEXT_SECONDARY if new_state else MIC_ACCENT
-            )
-
-    # ------------------------------------------------------------------
-    # Lista de Aplicativos
+    # Renderização limpa de Aplicativos (1 linha elegante por app)
     # ------------------------------------------------------------------
     def _render_app_list(self, force_rebuild: bool = False) -> None:
         if not force_rebuild:
@@ -1201,109 +912,75 @@ class MixersApp(ctk.CTk):
         self._last_app_pct.clear()
         self._last_app_peak.clear()
 
-        query = self._search_var.get().strip().lower()
-        filtered = [
-            s
-            for s in self._current_sessions.values()
-            if not query or query in s.display_name.lower() or query in s.app_id.lower()
-        ]
-
-        if not filtered:
-            empty_card = ctk.CTkFrame(
-                self.apps_scroll,
-                fg_color=CARD_SURFACE,
-                border_color=CARD_BORDER,
-                border_width=1,
-                corner_radius=12,
-            )
-            empty_card.grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-            msg = (
-                "Nenhum app encontrado."
-                if query
-                else "Nenhum aplicativo tocando som agora.\nAbra um navegador, música ou jogo."
-            )
+        sessions = list(self._current_sessions.values())
+        if not sessions:
             ctk.CTkLabel(
-                empty_card,
-                text=msg,
-                font=ctk.CTkFont(size=11),
-                text_color=TEXT_SECONDARY,
-                justify="center",
-            ).pack(padx=12, pady=24)
+                self.apps_scroll,
+                text="Nenhum aplicativo reproduzindo áudio.",
+                font=ctk.CTkFont(family="Segoe UI", size=12),
+                text_color=TEXT_MUTED,
+            ).grid(row=0, column=0, padx=14, pady=18, sticky="w")
             return
 
-        for idx, session in enumerate(filtered):
-            card = ctk.CTkFrame(
-                self.apps_scroll,
-                fg_color=CARD_SURFACE,
-                border_color=CARD_BORDER,
-                border_width=1,
-                corner_radius=11,
-            )
-            card.grid(row=idx, column=0, padx=4, pady=3, sticky="ew")
-            card.grid_columnconfigure(1, weight=1)
+        for idx, session in enumerate(sessions):
+            row = ctk.CTkFrame(self.apps_scroll, fg_color=LIST_BAND, corner_radius=0)
+            row.grid(row=idx, column=0, padx=6, pady=2, sticky="ew")
+            row.grid_columnconfigure(1, weight=1)
 
             vol_pct = int(round(session.volume * 100))
             self._last_app_pct[session.app_id] = vol_pct
 
-            ctk.CTkLabel(
-                card,
-                text=self._truncate(session.display_name, 25),
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=TEXT_PRIMARY,
-                anchor="w",
-            ).grid(row=0, column=0, columnspan=2, padx=10, pady=(7, 1), sticky="w")
-
-            pct_lbl = ctk.CTkLabel(
-                card,
-                text=f"{vol_pct}%",
-                font=ctk.CTkFont(size=12, weight="bold"),
-                text_color=TEXT_SECONDARY if session.muted else ACCENT,
-            )
-            pct_lbl.grid(row=0, column=2, padx=10, pady=(7, 1), sticky="e")
-
-            mute_btn = ctk.CTkButton(
-                card,
-                text="Mudo" if session.muted else "Som",
-                width=46,
-                height=22,
-                corner_radius=7,
-                font=ctk.CTkFont(size=10, weight="bold"),
+            icon_btn = ctk.CTkButton(
+                row,
+                text="",
+                image=get_app_badge_icon(
+                    session.app_id, session.display_name, muted=session.muted, size=24
+                ),
+                width=34,
+                height=34,
+                corner_radius=8,
+                fg_color="transparent",
+                hover_color=PILL_BG,
                 command=lambda aid=session.app_id: self._toggle_app_mute(aid),
             )
-            self._style_mute_button(mute_btn, session.muted)
-            mute_btn.grid(row=1, column=0, padx=(10, 6), pady=(2, 5))
+            icon_btn.grid(row=0, column=0, rowspan=2, padx=(4, 6), pady=3)
 
-            slider = ctk.CTkSlider(
-                card,
-                from_=0,
-                to=100,
-                number_of_steps=100,
+            ctk.CTkLabel(
+                row,
+                text=self._truncate(session.display_name, 26),
+                font=ctk.CTkFont(family="Segoe UI", size=10),
+                text_color=TEXT_MUTED if session.muted else "#C4BDD8",
+                anchor="w",
                 height=14,
-                progress_color=ACCENT,
-                button_color=TEXT_PRIMARY,
-                button_hover_color=ACCENT,
-                command=lambda val, aid=session.app_id: self._on_app_slider(aid, val),
-            )
-            slider.set(vol_pct)
-            slider.grid(row=1, column=1, columnspan=2, padx=(0, 10), pady=(2, 5), sticky="ew")
+            ).grid(row=0, column=1, padx=(6, 4), pady=(3, 0), sticky="w")
 
-            meter = ctk.CTkProgressBar(
-                card,
-                height=3,
-                corner_radius=2,
-                fg_color=CARD_INNER,
-                progress_color=ACCENT,
+            slider = EarTrumpetSlider(
+                row,
+                bg_color=LIST_BAND,
+                value=vol_pct,
+                muted=session.muted,
+                on_change=lambda val, aid=session.app_id: self._on_app_slider(aid, val),
+                height=24,
             )
             init_peak = 0.0 if session.muted else session.peak_level
-            meter.set(init_peak)
+            slider.set_peak(init_peak, PEAK_WHITE)
             self._last_app_peak[session.app_id] = init_peak
-            meter.grid(row=2, column=0, columnspan=3, padx=10, pady=(0, 7), sticky="ew")
+            slider.grid(row=1, column=1, padx=0, pady=(0, 3), sticky="ew")
+
+            pct_lbl = ctk.CTkLabel(
+                row,
+                text=str(vol_pct),
+                width=34,
+                anchor="e",
+                font=ctk.CTkFont(family="Segoe UI", size=15, weight="normal"),
+                text_color=TEXT_MUTED if session.muted else TEXT_PRIMARY,
+            )
+            pct_lbl.grid(row=0, column=2, rowspan=2, padx=(4, 8), pady=3)
 
             self._app_rows[session.app_id] = {
-                "mute_btn": mute_btn,
+                "icon_btn": icon_btn,
                 "slider": slider,
                 "pct_lbl": pct_lbl,
-                "meter": meter,
             }
 
     def _sync_existing_rows(self) -> None:
@@ -1314,38 +991,196 @@ class MixersApp(ctk.CTk):
             vol_pct = int(round(session.volume * 100))
             if vol_pct != self._last_app_pct.get(app_id):
                 self._last_app_pct[app_id] = vol_pct
-                widgets["slider"].set(vol_pct)
-                widgets["pct_lbl"].configure(text=f"{vol_pct}%")
+                widgets["slider"].set_value(vol_pct)
+                widgets["pct_lbl"].configure(text=str(vol_pct))
+            widgets["slider"].set_muted(session.muted)
             widgets["pct_lbl"].configure(
-                text_color=TEXT_SECONDARY if session.muted else ACCENT
+                text_color=TEXT_MUTED if session.muted else TEXT_PRIMARY
             )
-            self._style_mute_button(widgets["mute_btn"], session.muted)
+            widgets["icon_btn"].configure(
+                image=get_app_badge_icon(
+                    session.app_id, session.display_name, muted=session.muted, size=24
+                )
+            )
 
     # ------------------------------------------------------------------
-    # Eventos de áudio e ajustes
+    # Microfones (mesmo visual clean + medidor de voz na própria trilha)
     # ------------------------------------------------------------------
-    def _on_master_slider(self, value: float) -> None:
-        pct = int(round(value))
+    def _toggle_mic_test(self) -> None:
+        if self._mic_monitor.active:
+            self._stop_mic_test()
+        else:
+            if not self._mics_expanded:
+                self._toggle_mics_section()
+            if self._mic_monitor.start():
+                self.mic_test_btn.configure(
+                    text="Parar",
+                    fg_color=DANGER_BG,
+                    hover_color=DANGER_HOVER,
+                )
+
+    def _stop_mic_test(self) -> None:
+        if self._mic_monitor.active:
+            self._mic_monitor.stop()
+        if hasattr(self, "mic_test_btn"):
+            self.mic_test_btn.configure(
+                text="Testar",
+                fg_color="#382863",
+                hover_color=ACCENT_PURPLE,
+            )
+
+    def _toggle_mics_section(self) -> None:
+        self._mics_expanded = not self._mics_expanded
+        self.settings.set("mics_expanded", self._mics_expanded)
+        self.mics_arrow_lbl.configure(text="⌄" if self._mics_expanded else "›")
+        if self._mics_expanded:
+            self.mics_body.grid(row=5, column=0, padx=2, pady=(2, 6), sticky="ew")
+        else:
+            self._stop_mic_test()
+            self.mics_body.grid_forget()
+        if self._is_visible:
+            self._update_window_geometry()
+
+    def _render_microphones(self) -> None:
+        for child in self.mics_body.winfo_children():
+            child.destroy()
+        self._mic_rows.clear()
+        self._last_mic_pct.clear()
+        self._last_mic_peak.clear()
+        self._last_mic_quality.clear()
+
+        mics = list(self._current_mics.values())
+        if not mics:
+            ctk.CTkLabel(
+                self.mics_body,
+                text="Nenhum microfone ativo.",
+                font=ctk.CTkFont(family="Segoe UI", size=11),
+                text_color=TEXT_MUTED,
+            ).grid(row=0, column=0, padx=14, pady=10, sticky="w")
+            return
+
+        for idx, mic in enumerate(mics):
+            row = ctk.CTkFrame(self.mics_body, fg_color=LIST_BAND, corner_radius=0)
+            row.grid(row=idx, column=0, padx=6, pady=2, sticky="ew")
+            row.grid_columnconfigure(1, weight=1)
+
+            vol_pct = int(round(mic.volume * 100))
+            self._last_mic_pct[mic.device_id] = vol_pct
+            init_peak = 0.0 if mic.muted else mic.peak_level
+            q_label, q_color = classify_mic_quality(init_peak, muted=mic.muted)
+            self._last_mic_peak[mic.device_id] = init_peak
+            self._last_mic_quality[mic.device_id] = q_label
+
+            icon_btn = ctk.CTkButton(
+                row,
+                text="",
+                image=get_mic_icon(muted=mic.muted, size=22),
+                width=34,
+                height=34,
+                corner_radius=8,
+                fg_color="transparent",
+                hover_color=PILL_BG,
+                command=lambda did=mic.device_id: self._toggle_mic_mute(did),
+            )
+            icon_btn.grid(row=0, column=0, rowspan=2, padx=(4, 6), pady=3)
+
+            meta = ctk.CTkFrame(row, fg_color="transparent")
+            meta.grid(row=0, column=1, padx=(6, 4), pady=(3, 0), sticky="ew")
+            meta.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                meta,
+                text=self._truncate(mic.name, 22),
+                font=ctk.CTkFont(family="Segoe UI", size=10),
+                text_color=TEXT_MUTED if mic.muted else "#C4BDD8",
+                anchor="w",
+                height=14,
+            ).grid(row=0, column=0, sticky="w")
+
+            quality_lbl = ctk.CTkLabel(
+                meta,
+                text=q_label,
+                font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"),
+                text_color=q_color,
+                height=14,
+            )
+            quality_lbl.grid(row=0, column=1, sticky="e")
+
+            slider = EarTrumpetSlider(
+                row,
+                bg_color=LIST_BAND,
+                value=vol_pct,
+                muted=mic.muted,
+                accent_color=ACCENT_PURPLE,
+                peak_color=q_color,
+                on_change=lambda val, did=mic.device_id: self._on_mic_slider(did, val),
+                height=24,
+            )
+            slider.set_peak(init_peak, q_color)
+            slider.grid(row=1, column=1, padx=0, pady=(0, 3), sticky="ew")
+
+            pct_lbl = ctk.CTkLabel(
+                row,
+                text=str(vol_pct),
+                width=34,
+                anchor="e",
+                font=ctk.CTkFont(family="Segoe UI", size=15, weight="normal"),
+                text_color=TEXT_MUTED if mic.muted else TEXT_PRIMARY,
+            )
+            pct_lbl.grid(row=0, column=2, rowspan=2, padx=(4, 8), pady=3)
+
+            self._mic_rows[mic.device_id] = {
+                "icon_btn": icon_btn,
+                "slider": slider,
+                "pct_lbl": pct_lbl,
+                "quality_lbl": quality_lbl,
+            }
+
+    def _sync_existing_mics(self) -> None:
+        for dev_id, widgets in self._mic_rows.items():
+            mic = self._current_mics.get(dev_id)
+            if not mic:
+                continue
+            vol_pct = int(round(mic.volume * 100))
+            if vol_pct != self._last_mic_pct.get(dev_id):
+                self._last_mic_pct[dev_id] = vol_pct
+                widgets["slider"].set_value(vol_pct)
+                widgets["pct_lbl"].configure(text=str(vol_pct))
+            widgets["slider"].set_muted(mic.muted)
+            widgets["pct_lbl"].configure(
+                text_color=TEXT_MUTED if mic.muted else TEXT_PRIMARY
+            )
+            widgets["icon_btn"].configure(image=get_mic_icon(muted=mic.muted, size=22))
+
+    # ------------------------------------------------------------------
+    # Eventos de áudio
+    # ------------------------------------------------------------------
+    def _apply_master_mute_visual(self, muted: bool) -> None:
+        self.master_mute_btn.configure(image=get_speaker_icon(muted=muted, size=24))
+        self.master_slider.set_muted(muted)
+        self.master_pct_lbl.configure(text_color=TEXT_MUTED if muted else TEXT_PRIMARY)
+
+    def _on_master_slider(self, pct: int) -> None:
         self._last_slider_ts = time.monotonic()
         if pct == self._last_master_pct:
             return
         self._last_master_pct = pct
-        self.master_pct_lbl.configure(text=f"{pct}%")
+        self.master_pct_lbl.configure(text=str(pct))
         self.backend.set_master_volume(pct / 100.0)
 
     def _toggle_master_mute(self) -> None:
         new_state = not self.backend.get_master_mute()
         self.backend.set_master_mute(new_state)
-        self._style_mute_button(self.master_mute_btn, new_state)
+        self._last_master_muted = new_state
+        self._apply_master_mute_visual(new_state)
 
-    def _on_app_slider(self, app_id: str, value: float) -> None:
-        pct = int(round(value))
+    def _on_app_slider(self, app_id: str, pct: int) -> None:
         self._last_slider_ts = time.monotonic()
         if pct == self._last_app_pct.get(app_id):
             return
         self._last_app_pct[app_id] = pct
         if app_id in self._app_rows:
-            self._app_rows[app_id]["pct_lbl"].configure(text=f"{pct}%")
+            self._app_rows[app_id]["pct_lbl"].configure(text=str(pct))
         self.backend.set_app_volume(app_id, pct / 100.0)
         if app_id in self._current_sessions:
             self._current_sessions[app_id].volume = pct / 100.0
@@ -1358,43 +1193,70 @@ class MixersApp(ctk.CTk):
         self.backend.set_app_mute(app_id, new_state)
         session.muted = new_state
         if app_id in self._app_rows:
-            self._style_mute_button(self._app_rows[app_id]["mute_btn"], new_state)
-            self._app_rows[app_id]["pct_lbl"].configure(
-                text_color=TEXT_SECONDARY if new_state else ACCENT
+            row = self._app_rows[app_id]
+            row["slider"].set_muted(new_state)
+            row["pct_lbl"].configure(text_color=TEXT_MUTED if new_state else TEXT_PRIMARY)
+            row["icon_btn"].configure(
+                image=get_app_badge_icon(
+                    session.app_id, session.display_name, muted=new_state, size=24
+                )
             )
 
-    def _toggle_pin(self) -> None:
-        self._pinned = not self._pinned
-        if self._pinned:
-            self.pin_btn.configure(fg_color=ACCENT, text_color="#0B1120")
-            self._set_status("Painel fixado na tela.")
-        else:
-            self.pin_btn.configure(fg_color=PILL_BG, text_color=TEXT_SECONDARY)
-            self._set_status("Oculta automaticamente ao clicar fora.")
+    def _on_mic_slider(self, device_id: str, pct: int) -> None:
+        self._last_slider_ts = time.monotonic()
+        if pct == self._last_mic_pct.get(device_id):
+            return
+        self._last_mic_pct[device_id] = pct
+        if device_id in self._mic_rows:
+            self._mic_rows[device_id]["pct_lbl"].configure(text=str(pct))
+        self.backend.set_microphone_volume(device_id, pct / 100.0)
+        if device_id in self._current_mics:
+            self._current_mics[device_id].volume = pct / 100.0
 
+    def _toggle_mic_mute(self, device_id: str) -> None:
+        mic = self._current_mics.get(device_id)
+        if not mic:
+            return
+        new_state = not mic.muted
+        self.backend.set_microphone_mute(device_id, new_state)
+        mic.muted = new_state
+        if device_id in self._mic_rows:
+            row = self._mic_rows[device_id]
+            row["slider"].set_muted(new_state)
+            row["pct_lbl"].configure(text_color=TEXT_MUTED if new_state else TEXT_PRIMARY)
+            row["icon_btn"].configure(image=get_mic_icon(muted=new_state, size=22))
+            q_label, q_color = classify_mic_quality(0.0, muted=new_state)
+            row["quality_lbl"].configure(text=q_label, text_color=q_color)
+
+    # ------------------------------------------------------------------
+    # Ajustes, Atalho Global, Perfis & Presets
+    # ------------------------------------------------------------------
     def _toggle_settings_drawer(self) -> None:
         self._settings_open = not self._settings_open
         if self._settings_open:
-            self.settings_drawer.grid(row=1, column=0, padx=6, pady=(0, 4), sticky="ew")
-            self.settings_btn.configure(fg_color=ACCENT, text_color="#0B1120")
+            self.settings_drawer.grid(row=2, column=0, padx=1, pady=0, sticky="ew")
+            self.settings_btn.configure(fg_color=ACCENT_PURPLE, text_color="#FFFFFF")
         else:
             if self._recording_hotkey:
                 self._cancel_record_hotkey()
             self.settings_drawer.grid_forget()
-            self.settings_btn.configure(fg_color=PILL_BG, text_color=TEXT_SECONDARY)
+            self.settings_btn.configure(fg_color="transparent", text_color="#C9C1E0")
+        if self._is_visible:
+            self._update_window_geometry()
 
-    def _on_transparent_bg_switch(self) -> None:
-        self._transparent_bg = bool(self._transparent_bg_var.get())
-        self.settings.set("transparent_bg", self._transparent_bg)
-        self._apply_transparency_mode()
-        self._set_status(
-            "Fundo transparente ativado." if self._transparent_bg else "Fundo sólido ativado."
-        )
+    def _toggle_pin(self) -> None:
+        self._pinned = not self._pinned
+        if self._pinned:
+            self.pin_btn.configure(fg_color=ACCENT_PURPLE, text_color="#FFFFFF")
+            self._set_status("Painel fixado na tela.")
+        else:
+            self.pin_btn.configure(fg_color=PILL_BG, text_color=TEXT_MUTED)
+            self._set_status("Oculta ao clicar fora.")
 
-    def _on_alpha_change(self, value: float) -> None:
-        pct = int(round(value))
-        self._alpha = pct / 100.0
-        self.alpha_lbl.configure(text=f"{pct}%")
+    def _on_alpha_change(self, pct: int) -> None:
+        clamped = max(75, min(100, int(pct)))
+        self._alpha = clamped / 100.0
+        self.alpha_lbl.configure(text=f"{clamped}%")
         self.settings.set("alpha", round(self._alpha, 2))
         try:
             self.attributes("-alpha", self._alpha)
@@ -1406,30 +1268,24 @@ class MixersApp(ctk.CTk):
         ok = set_autostart(desired)
         if not ok and sys.platform == "win32":
             self._autostart_var.set(is_autostart_enabled())
-            self._set_status("Não foi possível alterar a inicialização automática.")
+            self._set_status("Erro ao alterar autostart.")
         else:
-            self._set_status(
-                "Iniciar com o Windows ativado." if desired else "Iniciar com o Windows desativado."
-            )
+            self._set_status("Autostart ativado." if desired else "Autostart desativado.")
 
     def _toggle_autostart_from_tray(self) -> None:
         new_val = not is_autostart_enabled()
         if set_autostart(new_val):
             self._autostart_var.set(new_val)
 
-    # ------------------------------------------------------------------
-    # Gravação de Atalho Global definido pelo usuário
-    # ------------------------------------------------------------------
     def _toggle_record_hotkey(self) -> None:
         if self._recording_hotkey:
             self._cancel_record_hotkey()
             return
         self._recording_hotkey = True
         self.record_hotkey_btn.configure(
-            text="Cancelar", fg_color=ACCENT, text_color="#0B1120"
+            text="Cancelar", fg_color=ACCENT_PURPLE, text_color="#FFFFFF"
         )
-        self.hotkey_badge.configure(text="Pressione teclas...")
-        self._set_status("Pressione o atalho desejado (ex: Ctrl+Alt+M) ou Esc.")
+        self.hotkey_badge.configure(text="Pressione...")
         self.focus_force()
 
     def _cancel_record_hotkey(self) -> None:
@@ -1447,7 +1303,7 @@ class MixersApp(ctk.CTk):
             text="Gravar", fg_color=PILL_BG, text_color=TEXT_PRIMARY
         )
         self._update_hotkey_badge("")
-        self._set_status("Atalho global desativado.")
+        self._set_status("Atalho desativado.")
 
     def _on_global_key_press(self, event) -> None:
         keysym = str(getattr(event, "keysym", ""))
@@ -1458,7 +1314,6 @@ class MixersApp(ctk.CTk):
 
         if keysym == "Escape":
             self._cancel_record_hotkey()
-            self._set_status("Gravação de atalho cancelada.")
             return
 
         if keysym in (
@@ -1498,16 +1353,12 @@ class MixersApp(ctk.CTk):
     def _update_hotkey_badge(self, hotkey: str) -> None:
         self.hotkey_badge.configure(text=hotkey if hotkey else "Desativado")
 
-    # ------------------------------------------------------------------
-    # Presets e Perfis
-    # ------------------------------------------------------------------
     def _preset_full_volume(self) -> None:
         for app_id in list(self._current_sessions):
             self.backend.set_app_mute(app_id, False)
             self.backend.set_app_volume(app_id, 1.0)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
-            self._set_status("Todos os apps restaurados para 100%.")
 
     def _preset_focus_mode(self) -> None:
         for app_id in list(self._current_sessions):
@@ -1515,14 +1366,12 @@ class MixersApp(ctk.CTk):
             self.backend.set_app_volume(app_id, 0.30)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
-            self._set_status("Modo Foco aplicado (30%).")
 
     def _preset_mute_all_apps(self) -> None:
         for app_id in list(self._current_sessions):
             self.backend.set_app_mute(app_id, True)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
-            self._set_status("Todos os apps foram mutados.")
 
     def _get_profile_options(self) -> list[str]:
         names = self.profile_manager.list_names()
@@ -1531,18 +1380,12 @@ class MixersApp(ctk.CTk):
     def _refresh_profile_menu(self, select_name: str | None = None) -> None:
         options = self._get_profile_options()
         self.profile_menu.configure(values=options)
-        if select_name and select_name in options:
-            self._selected_profile.set(select_name)
-        else:
-            self._selected_profile.set(options[0])
+        self._selected_profile.set(select_name if (select_name in options) else options[0])
 
     def _save_profile_dialog(self) -> None:
         self._dialog_open = True
         try:
-            dialog = ctk.CTkInputDialog(
-                text="Nome do perfil:",
-                title="Salvar Perfil",
-            )
+            dialog = ctk.CTkInputDialog(text="Nome do perfil:", title="Salvar Perfil")
             name = dialog.get_input()
         finally:
             self._dialog_open = False
@@ -1559,8 +1402,6 @@ class MixersApp(ctk.CTk):
         if self.profile_manager.apply_to_backend(name, self.backend):
             self.refresh_audio_state(force_rebuild=False)
             self._set_status(f"Perfil '{name}' aplicado.")
-        else:
-            self._set_status("Selecione um perfil válido.")
 
     def _delete_selected_profile(self) -> None:
         name = self._selected_profile.get()
@@ -1596,17 +1437,18 @@ class MixersApp(ctk.CTk):
     ) -> None:
         if error:
             if manual:
-                short_err = self._truncate(error.replace("\n", " "), 42)
-                self._set_status(f"Erro ao verificar: {short_err}")
+                self._set_status(f"Erro: {self._truncate(error.replace(chr(10), ' '), 30)}")
             return
 
         if info is not None:
             self._pending_update = info
             self.update_banner_lbl.configure(text=f"Nova versão v{info.version} disponível!")
-            self.update_banner.grid(row=2, column=0, padx=6, pady=(0, 4), sticky="ew")
-            self._set_status(f"Atualização v{info.version} pronta para instalar.")
+            self.update_banner.grid(row=1, column=0, padx=8, pady=(6, 2), sticky="ew")
+            if self._is_visible:
+                self._update_window_geometry()
+            self._set_status(f"v{info.version} pronta.")
         elif manual:
-            self._set_status(f"Você já está na versão mais recente (v{__version__}).")
+            self._set_status(f"Atualizado (v{__version__}).")
 
     def _start_update_download(self) -> None:
         if not self._pending_update or self._updating:
@@ -1614,13 +1456,9 @@ class MixersApp(ctk.CTk):
         self._updating = True
         update = self._pending_update
         self.update_now_btn.configure(state="disabled", text="Baixando...")
-        self._set_status(f"Baixando Mixers v{update.version}...")
 
         def _progress(pct: int) -> None:
-            self.after(
-                0,
-                lambda: self.update_now_btn.configure(text=f"{pct}%"),
-            )
+            self.after(0, lambda: self.update_now_btn.configure(text=f"{pct}%"))
 
         def _worker() -> None:
             try:
@@ -1635,14 +1473,12 @@ class MixersApp(ctk.CTk):
         self._updating = False
         if error:
             self.update_now_btn.configure(state="normal", text="Atualizar")
-            self._set_status(f"Erro ao atualizar: {error}")
+            self._set_status(f"Erro: {self._truncate(error, 30)}")
             return
         if should_quit:
-            self._set_status("Reiniciando para concluir a atualização...")
             self.after(200, self._exit_for_update)
         else:
             self.update_now_btn.configure(state="normal", text="Abrir")
-            self._set_status("Página de download aberta no navegador.")
 
     def _exit_for_update(self) -> None:
         self._stop_live_loops()
@@ -1660,42 +1496,9 @@ class MixersApp(ctk.CTk):
     # Helpers
     # ------------------------------------------------------------------
     @staticmethod
-    def _style_mute_button(btn: ctk.CTkButton, muted: bool) -> None:
-        if muted:
-            btn.configure(
-                text="Mudo",
-                fg_color=MUTED_BG,
-                hover_color=MUTED_HOVER,
-                text_color=TEXT_PRIMARY,
-            )
-        else:
-            btn.configure(
-                text="Som",
-                fg_color=PILL_BG,
-                hover_color=PILL_HOVER,
-                text_color=ACCENT,
-            )
-
-    @staticmethod
-    def _style_mic_mute_button(btn: ctk.CTkButton, muted: bool) -> None:
-        if muted:
-            btn.configure(
-                text="Mudo",
-                fg_color=MUTED_BG,
-                hover_color=MUTED_HOVER,
-                text_color=TEXT_PRIMARY,
-            )
-        else:
-            btn.configure(
-                text="Mic",
-                fg_color="#132A23",
-                hover_color="#1E3F35",
-                text_color=MIC_ACCENT,
-            )
-
-    @staticmethod
     def _truncate(text: str, max_len: int) -> str:
         return text if len(text) <= max_len else text[: max_len - 1] + "…"
 
     def _set_status(self, message: str) -> None:
-        self.status_lbl.configure(text=message)
+        if hasattr(self, "status_lbl"):
+            self.status_lbl.configure(text=message)
