@@ -6,6 +6,7 @@ import unittest
 
 from mixers.audio_backend import DemoAudioBackend, clamp_volume, format_app_name
 from mixers.profiles import ProfileManager
+from mixers.updater import is_newer_version, parse_version, select_exe_asset_url
 from mixers.windows_integration import get_work_area
 
 
@@ -69,6 +70,23 @@ class TestDemoBackendAndProfiles(unittest.TestCase):
 
             self.assertTrue(manager.delete("Foco"))
             self.assertNotIn("Foco", manager.list_names())
+
+
+class TestAutoUpdater(unittest.TestCase):
+    def test_version_comparison(self) -> None:
+        self.assertEqual(parse_version("v0.2.0"), (0, 2, 0))
+        self.assertTrue(is_newer_version("v0.3.0", "0.2.0"))
+        self.assertTrue(is_newer_version("0.2.1", "0.2.0"))
+        self.assertFalse(is_newer_version("v0.2.0", "0.2.0"))
+        self.assertFalse(is_newer_version("0.1.9", "0.2.0"))
+
+    def test_select_exe_asset_url(self) -> None:
+        assets = [
+            {"name": "Mixers-Windows.zip", "browser_download_url": "https://example/zip"},
+            {"name": "Mixers.exe", "browser_download_url": "https://example/Mixers.exe"},
+        ]
+        self.assertEqual(select_exe_asset_url(assets), "https://example/Mixers.exe")
+        self.assertIsNone(select_exe_asset_url([]))
 
 
 if __name__ == "__main__":

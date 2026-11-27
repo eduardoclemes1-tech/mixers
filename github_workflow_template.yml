@@ -1,12 +1,17 @@
 # Copie este arquivo para .github/workflows/build-windows.yml no GitHub
-# para gerar automaticamente o Mixers-Windows.zip a cada push!
+# Ele gera Mixers-Windows.zip a cada push e publica uma Release automática
+# com Mixers.exe + Mixers-Windows.zip sempre que uma tag v* (ex: v0.2.0) for criada!
 
-name: Build Mixers Windows ZIP
+name: Build & Release Mixers Windows
 
 on:
   push:
     branches: [ main ]
+    tags: [ "v*" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -35,8 +40,17 @@ jobs:
           pyinstaller --noconfirm --onefile --windowed --name Mixers --collect-all customtkinter --hidden-import pystray._win32 main.py
           python scripts/make_zip.py
 
-      - name: Publicar Mixers-Windows.zip
+      - name: Publicar artefato Mixers-Windows.zip
         uses: actions/upload-artifact@v4
         with:
           name: Mixers-Windows-ZIP
           path: dist/Mixers-Windows.zip
+
+      - name: Publicar GitHub Release (para Auto-Update)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/Mixers.exe
+            dist/Mixers-Windows.zip

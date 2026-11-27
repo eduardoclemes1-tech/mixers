@@ -51,6 +51,7 @@ class TrayController:
         on_mute_apps: Callable[[], None],
         on_toggle_autostart: Callable[[], None],
         is_autostart: Callable[[], bool],
+        on_check_updates: Callable[[], None],
         on_quit: Callable[[], None],
     ) -> None:
         self._on_toggle_window = on_toggle_window
@@ -59,6 +60,7 @@ class TrayController:
         self._on_mute_apps = on_mute_apps
         self._on_toggle_autostart = on_toggle_autostart
         self._is_autostart = is_autostart
+        self._on_check_updates = on_check_updates
         self._on_quit = on_quit
         self._icon: pystray.Icon | None = None
         self._thread: threading.Thread | None = None
@@ -76,6 +78,7 @@ class TrayController:
                 self._wrap(self._on_toggle_autostart),
                 checked=lambda _item: self._is_autostart(),
             ),
+            pystray.MenuItem("Verificar atualizações", self._wrap(self._on_check_updates)),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Sair", self._wrap(self._on_quit)),
         )

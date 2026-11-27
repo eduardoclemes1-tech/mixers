@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from typing import Dict
 
 import customtkinter as ctk
@@ -11,6 +12,7 @@ from mixers import __version__
 from mixers.audio_backend import AppAudioSession, AudioBackend
 from mixers.profiles import ProfileManager
 from mixers.tray import TrayController
+from mixers.updater import UpdateInfo, check_for_update, download_and_apply_update
 from mixers.windows_integration import (
     apply_windows_glass_style,
     get_work_area,
@@ -73,6 +75,8 @@ class MixersApp(ctk.CTk):
         self._search_var.trace_add("write", lambda *_: self._render_app_list(force_rebuild=True))
         self._selected_profile = ctk.StringVar(value="Sem perfis salvos")
         self._autostart_var = ctk.BooleanVar(value=is_autostart_enabled())
+        self._pending_update: UpdateInfo | None = None
+        self._updating = False
 
         # Estilo flutuante transparente (Windows)
         if sys.platform == "win32":
@@ -103,6 +107,7 @@ class MixersApp(ctk.CTk):
                     on_mute_apps=lambda: self.after(0, self._preset_mute_all_apps),
                     on_toggle_autostart=lambda: self.after(0, self._toggle_autostart_from_tray),
                     is_autostart=is_autostart_enabled,
+                    on_check_updates=lambda: self.after(0, lambda: self.check_updates_async(manual=True)),
                     on_quit=lambda: self.after(0, self.quit_app),
                 )
                 self.tray.start()
@@ -116,6 +121,7 @@ class MixersApp(ctk.CTk):
 
         self.after(self.SESSION_REFRESH_MS, self._schedule_session_refresh)
         self.after(self.METER_REFRESH_MS, self._schedule_meter_refresh)
+        self.after(3000, lambda: self.check_updates_async(manual=False))
 
     # ------------------------------------------------------------------
     # Posicionamento e visual nativo
@@ -163,7 +169,7 @@ class MixersApp(ctk.CTk):
         )
         self.shell.pack(fill="both", expand=True)
         self.shell.grid_columnconfigure(0, weight=1)
-        self.shell.grid_rowconfigure(4, weight=1)
+        self.shell.grid_rowconfigure(5, weight=1)
 
         # 1. Cabeçalho compacto (arrastável)
         header = ctk.CTkFrame(self.shell, fg_color="transparent")
@@ -341,6 +347,62 @@ class MixersApp(ctk.CTk):
             command=self._delete_selected_profile,
         ).pack(side="left")
 
+        upd_row = ctk.CTkFrame(self.settings_drawer, fg_color="transparent")
+        upd_row.grid(row=3, column=0, columnspan=3, padx=10, pady=(0, 10), sticky="ew")
+
+        ctk.CTkLabel(
+            upd_row,
+            text=f"Versão atual: v{__version__}",
+            font=ctk.CTkFont(size=11),
+            text_color=TEXT_SECONDARY,
+        ).pack(side="left", padx=(2, 0))
+
+        self.check_update_btn = ctk.CTkButton(
+            upd_row,
+            text="Verificar atualização",
+            width=136,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=11),
+            fg_color=CARD_BORDER,
+            hover_color="#334155",
+            command=lambda: self.check_updates_async(manual=True),
+        )
+        self.check_update_btn.pack(side="right")
+
+        # Banner de atualização disponível (oculto por padrão)
+        self.update_banner = ctk.CTkFrame(
+            self.shell,
+            fg_color="#0C2D48",
+            border_color=ACCENT,
+            border_width=1,
+            corner_radius=10,
+        )
+        self.update_banner.grid_columnconfigure(0, weight=1)
+
+        self.update_banner_lbl = ctk.CTkLabel(
+            self.update_banner,
+            text="Nova versão disponível!",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=TEXT_PRIMARY,
+            anchor="w",
+        )
+        self.update_banner_lbl.grid(row=0, column=0, padx=10, pady=7, sticky="w")
+
+        self.update_now_btn = ctk.CTkButton(
+            self.update_banner,
+            text="Atualizar",
+            width=82,
+            height=24,
+            corner_radius=7,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            text_color="#0B1120",
+            command=self._start_update_download,
+        )
+        self.update_now_btn.grid(row=0, column=1, padx=(4, 8), pady=7)
+
         # 3. Card Master Volume (clean + medidor em tempo real)
         master_card = ctk.CTkFrame(
             self.shell,
@@ -349,7 +411,7 @@ class MixersApp(ctk.CTk):
             border_width=1,
             corner_radius=12,
         )
-        master_card.grid(row=2, column=0, padx=14, pady=6, sticky="ew")
+        master_card.grid(row=3, column=0, padx=14, pady=6, sticky="ew")
         master_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -403,7 +465,7 @@ class MixersApp(ctk.CTk):
 
         # 4. Barra compacta de ações rápidas + filtro
         quick_row = ctk.CTkFrame(self.shell, fg_color="transparent")
-        quick_row.grid(row=3, column=0, padx=14, pady=(2, 4), sticky="ew")
+        quick_row.grid(row=4, column=0, padx=14, pady=(2, 4), sticky="ew")
 
         ctk.CTkButton(
             quick_row,
@@ -460,12 +522,12 @@ class MixersApp(ctk.CTk):
             scrollbar_button_color=CARD_BORDER,
             scrollbar_button_hover_color="#334155",
         )
-        self.apps_scroll.grid(row=4, column=0, padx=10, pady=(2, 4), sticky="nsew")
+        self.apps_scroll.grid(row=5, column=0, padx=10, pady=(2, 4), sticky="nsew")
         self.apps_scroll.grid_columnconfigure(0, weight=1)
 
         # 6. Rodapé minimalista
         footer = ctk.CTkFrame(self.shell, fg_color="transparent")
-        footer.grid(row=5, column=0, padx=14, pady=(2, 10), sticky="ew")
+        footer.grid(row=6, column=0, padx=14, pady=(2, 10), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
 
         self.status_lbl = ctk.CTkLabel(
@@ -846,6 +908,81 @@ class MixersApp(ctk.CTk):
         if self.profile_manager.delete(name):
             self._refresh_profile_menu()
             self._set_status(f"Perfil '{name}' removido.")
+
+    # ------------------------------------------------------------------
+    # Auto-Updater via GitHub Releases
+    # ------------------------------------------------------------------
+    def check_updates_async(self, manual: bool = False) -> None:
+        if self._updating:
+            return
+        if manual:
+            if not self._is_visible:
+                self.show_from_tray()
+            self._set_status("Verificando atualizações...")
+
+        def _worker() -> None:
+            try:
+                info = check_for_update(__version__)
+                self.after(0, lambda: self._on_update_checked(info, manual, None))
+            except Exception as exc:
+                self.after(0, lambda: self._on_update_checked(None, manual, str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_checked(
+        self,
+        info: UpdateInfo | None,
+        manual: bool,
+        error: str | None,
+    ) -> None:
+        if error:
+            if manual:
+                self._set_status("Não foi possível verificar atualizações agora.")
+            return
+
+        if info is not None:
+            self._pending_update = info
+            self.update_banner_lbl.configure(text=f"Nova versão v{info.version} disponível!")
+            self.update_banner.grid(row=2, column=0, padx=14, pady=(2, 4), sticky="ew")
+            self._set_status(f"Atualização v{info.version} pronta para instalar.")
+        elif manual:
+            self._set_status(f"Você já está na versão mais recente (v{__version__}).")
+
+    def _start_update_download(self) -> None:
+        if not self._pending_update or self._updating:
+            return
+        self._updating = True
+        update = self._pending_update
+        self.update_now_btn.configure(state="disabled", text="Baixando...")
+        self._set_status(f"Baixando Mixers v{update.version}...")
+
+        def _progress(pct: int) -> None:
+            self.after(
+                0,
+                lambda: self.update_now_btn.configure(text=f"{pct}%"),
+            )
+
+        def _worker() -> None:
+            try:
+                should_quit = download_and_apply_update(update, on_progress=_progress)
+                self.after(0, lambda: self._on_update_finished(should_quit, None))
+            except Exception as exc:
+                self.after(0, lambda: self._on_update_finished(False, str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_finished(self, should_quit: bool, error: str | None) -> None:
+        self._updating = False
+        if error:
+            self.update_now_btn.configure(state="normal", text="Atualizar")
+            self._set_status(f"Erro ao atualizar: {error}")
+            return
+        if should_quit:
+            self._set_status("Reiniciando para concluir a atualização...")
+            self.after(200, self.quit_app)
+        else:
+            self.update_now_btn.configure(state="normal", text="Abrir")
+            self._set_status("Página de download aberta no navegador.")
 
     # ------------------------------------------------------------------
     # Helpers
