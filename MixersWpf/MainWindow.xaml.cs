@@ -17,13 +17,23 @@ namespace Mixers;
 public partial class MainWindow : Window
 {
     private const double BaseWindowWidth = 356;
-    private const double MinWindowHeight = 384;
-    private const double MaxWindowHeight = 560;
+    private const double MinWindowHeight = 396;
+    private const double MaxWindowHeight = 570;
 
     private static readonly SolidColorBrush PrimaryTextBrush = CreateFrozenBrush(Color.FromRgb(244, 244, 248));
     private static readonly SolidColorBrush MutedTextBrush = CreateFrozenBrush(Color.FromRgb(130, 125, 152));
     private static readonly SolidColorBrush SubtleButtonBrush = CreateFrozenBrush(Color.FromArgb(34, 255, 255, 255));
     private static readonly SolidColorBrush DangerActiveBrush = CreateFrozenBrush(Color.FromRgb(139, 38, 62));
+
+    private static readonly HashSet<string> CallApps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "discord", "teams", "ms-teams", "zoom", "skype", "slack", "webex", "obs64"
+    };
+
+    private static readonly HashSet<string> MediaApps = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "spotify", "vlc", "chrome", "msedge", "firefox", "opera", "brave", "applemusic", "tidal", "music.ui"
+    };
 
     private static SolidColorBrush CreateFrozenBrush(Color c)
     {
@@ -34,23 +44,29 @@ public partial class MainWindow : Window
 
     private readonly AudioService _audio = new();
     private readonly SettingsService _settings = new();
-    private readonly HotkeyService _hotkey;
+    private readonly HotkeyService _hotkey = new();
     private readonly TrayService _tray;
     private FluentThemePalette _theme;
 
     private readonly DispatcherTimer _sessionTimer;
     private readonly DispatcherTimer _meterTimer;
-    private readonly DispatcherTimer _opacitySaveTimer;
+    private readonly DispatcherTimer _bgMonitorTimer;
+    private readonly DispatcherTimer _settingsSaveTimer;
 
     private readonly Dictionary<string, AppRowWidgets> _appRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _seenApps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
+    private DateTime _lastCallSoundUtc = DateTime.MinValue;
+
     private List<AppSessionInfo> _sessions = new();
     private List<MicrophoneInfo> _mics = new();
 
     private bool _isVisible;
     private bool _settingsOpen;
+    private bool _devicesOpen;
     private bool _pinned;
-    private bool _recordingHotkey;
+    private int _recordingHotkeyId; // 0 = não gravando, OpenHotkeyId ou MicMuteHotkeyId
     private bool _updating;
     private UpdateInfo? _pendingUpdate;
     private DateTime _lastSliderEdit = DateTime.MinValue;
@@ -87,8 +103,12 @@ public partial class MainWindow : Window
         VersionBadgeText.Text = $"v{App.AppVersion}";
         StatusText.Text = $"Mixers v{App.AppVersion}";
         AnimationsCheck.IsChecked = _settings.Settings.Animations;
+        MediaControlsCheck.IsChecked = _settings.Settings.ShowMediaControls;
+        RememberVolCheck.IsChecked = _settings.Settings.RememberAppVolumes;
+        AutoDuckCheck.IsChecked = _settings.Settings.AutoDuckOnCall;
         AutostartCheck.IsChecked = WindowsThemeService.IsAutostartEnabled();
         PinCheck.IsChecked = false;
+        MediaBar.Visibility = _settings.Settings.ShowMediaControls ? Visibility.Visible : Visibility.Collapsed;
 
         int savedAlphaPct = (int)Math.Clamp(Math.Round(_settings.Settings.Alpha * 100), 65, 100);
         OpacitySlider.Value = savedAlphaPct;
@@ -97,14 +117,15 @@ public partial class MainWindow : Window
 
         MasterSlider.ValueChanged += OnMasterSliderChanged;
 
-        _hotkey = new HotkeyService(() => Dispatcher.Invoke(ToggleFlyout));
+        // Atalhos globais (Abrir/Ocultar + Mutar Microfone)
         _hotkey.Attach(this);
-        var (_, hkMsg) = _hotkey.Register(_settings.Settings.Hotkey);
-        UpdateHotkeyBadge(_hotkey.CurrentHotkey);
-        if (!string.IsNullOrEmpty(hkMsg)) StatusText.Text = hkMsg;
+        _hotkey.Register(HotkeyService.OpenHotkeyId, _settings.Settings.Hotkey, () => Dispatcher.Invoke(ToggleFlyout));
+        _hotkey.Register(HotkeyService.MicMuteHotkeyId, _settings.Settings.MicMuteHotkey, () => Dispatcher.Invoke(ToggleGlobalMicMute));
+        RefreshHotkeyButtons();
 
         _tray = new TrayService(
             onToggle: () => Dispatcher.Invoke(ToggleFlyout),
+            onToggleMicMute: () => Dispatcher.Invoke(ToggleGlobalMicMute),
             onFullVolume: () => Dispatcher.Invoke(ApplyPresetFull),
             onFocusMode: () => Dispatcher.Invoke(ApplyPresetFocus),
             onMuteApps: () => Dispatcher.Invoke(ApplyPresetMute),
@@ -131,10 +152,15 @@ public partial class MainWindow : Window
             }
         };
 
-        _opacitySaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(350) };
-        _opacitySaveTimer.Tick += (_, _) =>
+        // Monitor leve em segundo plano (3s) para Modo Call + Ícone dinâmico + Lembrar volume
+        _bgMonitorTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        _bgMonitorTimer.Tick += (_, _) => RunBackgroundAudioAutomations();
+        _bgMonitorTimer.Start();
+
+        _settingsSaveTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _settingsSaveTimer.Tick += (_, _) =>
         {
-            _opacitySaveTimer.Stop();
+            _settingsSaveTimer.Stop();
             _settings.SaveSettings();
         };
 
@@ -154,33 +180,43 @@ public partial class MainWindow : Window
             _isVisible = false;
         }
 
-        // Checa atualização silenciosamente 3 segundos após abrir
         _ = Task.Delay(3000).ContinueWith(_ => Dispatcher.Invoke(() => _ = CheckUpdatesAsync(manual: false)));
     }
 
     // ------------------------------------------------------------------
-    // Tema dinâmico baseado na cor de destaque do Windows + Vidro Acrylic
+    // Tema dinâmico do Windows + Vidro Acrylic
     // ------------------------------------------------------------------
     private void ApplyTheme()
     {
-        var accentBrush = new SolidColorBrush(_theme.Accent);
+        var accentBrush = CreateFrozenBrush(_theme.Accent);
         Resources["AccentBrush"] = accentBrush;
 
-        RootBorder.BorderBrush = new SolidColorBrush(_theme.PanelBorder);
-        MasterBand.Background = new SolidColorBrush(_theme.HeaderBand);
-        MicsHeaderBand.Background = new SolidColorBrush(_theme.HeaderBand);
-        SettingsHeaderBand.Background = new SolidColorBrush(_theme.HeaderBand);
+        RootBorder.BorderBrush = CreateFrozenBrush(_theme.PanelBorder);
+        var headerBrush = CreateFrozenBrush(_theme.HeaderBand);
+        MasterBand.Background = headerBrush;
+        MicsHeaderBand.Background = headerBrush;
+        SettingsHeaderBand.Background = headerBrush;
 
-        var listBrush = new SolidColorBrush(_theme.ListBand);
+        var listBrush = CreateFrozenBrush(_theme.ListBand);
         AppsListBand.Background = listBrush;
         MicsListBand.Background = listBrush;
         SettingsBodyBand.Background = listBrush;
-        SettingsFooterBand.Background = new SolidColorBrush(Color.FromArgb(230, _theme.ListBand.R, _theme.ListBand.G, _theme.ListBand.B));
+        SettingsFooterBand.Background = CreateFrozenBrush(Color.FromArgb(230, _theme.ListBand.R, _theme.ListBand.G, _theme.ListBand.B));
 
         ApplySliderPalette(MasterSlider);
         ApplySliderPalette(OpacitySlider);
         foreach (var row in _appRows.Values) ApplySliderPalette(row.Slider);
         foreach (var row in _micRows.Values) ApplySliderPalette(row.Slider);
+    }
+
+    private void ApplySliderPalette(VolumeSliderControl slider)
+    {
+        slider.ApplyColors(
+            _theme.Accent,
+            _theme.AccentHover,
+            _theme.TrackUnfilled,
+            _theme.TrackMuted,
+            _theme.ThumbMuted);
     }
 
     private void OnSystemDisplayChanged(object? sender, EventArgs e)
@@ -203,18 +239,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplySliderPalette(VolumeSliderControl slider)
+    private void ScheduleSaveSettings()
     {
-        slider.ApplyColors(
-            _theme.Accent,
-            _theme.AccentHover,
-            _theme.TrackUnfilled,
-            _theme.TrackMuted,
-            _theme.ThumbMuted);
+        _settingsSaveTimer.Stop();
+        _settingsSaveTimer.Start();
     }
 
     // ------------------------------------------------------------------
-    // Posicionamento canto inferior direito + animações GPU (DirectX 60/144Hz)
+    // Posicionamento responsivo + animações GPU
     // ------------------------------------------------------------------
     private void PositionBottomRight()
     {
@@ -224,7 +256,7 @@ public partial class MainWindow : Window
         double maxAllowedW = Math.Max(290, workArea.Width - margin * 2);
         Width = Math.Min(BaseWindowWidth, maxAllowedW);
 
-        double maxAllowedH = Math.Min(MaxWindowHeight, Math.Max(310, workArea.Height - margin * 2));
+        double maxAllowedH = Math.Min(MaxWindowHeight, Math.Max(320, workArea.Height - margin * 2));
         double minAllowedH = Math.Min(MinWindowHeight, maxAllowedH);
         Height = Math.Clamp(ComputeDesiredHeight(), minAllowedH, maxAllowedH);
 
@@ -234,20 +266,21 @@ public partial class MainWindow : Window
 
     private double ComputeDesiredHeight()
     {
-        double h = 92; // Master band
+        double h = _settings.Settings.ShowMediaControls ? 116 : 92;
+        if (_devicesOpen) h += 110;
         if (UpdateBanner.Visibility == Visibility.Visible) h += 36;
 
         int appCount = Math.Max(1, _sessions.Count);
         h += Math.Min(appCount, 5) * 44 + 10;
 
-        h += 38; // Mics header
+        h += 38;
         if (_settings.Settings.MicsExpanded)
         {
             int micCount = Math.Max(1, _mics.Count);
             h += Math.Min(micCount, 2) * 44 + 8;
         }
 
-        return Math.Clamp(h, MinWindowHeight, MaxWindowHeight);
+        return h;
     }
 
     public void ToggleFlyout()
@@ -259,6 +292,7 @@ public partial class MainWindow : Window
     public void ShowFlyout()
     {
         _isVisible = true;
+        CloseOutputDevicesPanel();
         SwitchToMixerView(instant: true);
         PositionBottomRight();
 
@@ -287,7 +321,6 @@ public partial class MainWindow : Window
             Activate();
         }
 
-        // Atualiza sessões sem travar a abertura
         Dispatcher.BeginInvoke(DispatcherPriority.Background, () => RefreshAudioState(forceRebuild: false));
         _sessionTimer.Start();
         _meterTimer.Start();
@@ -298,6 +331,7 @@ public partial class MainWindow : Window
         if (!_isVisible) return;
         _isVisible = false;
         CancelRecordHotkey();
+        CloseOutputDevicesPanel();
         StopMicTest();
         _sessionTimer.Stop();
         _meterTimer.Stop();
@@ -324,11 +358,11 @@ public partial class MainWindow : Window
 
     private void OnWindowDeactivated()
     {
-        if (_pinned || _recordingHotkey || !_isVisible) return;
+        if (_pinned || _recordingHotkeyId != 0 || !_isVisible) return;
         Dispatcher.BeginInvoke(DispatcherPriority.Background, async () =>
         {
             await Task.Delay(120);
-            if (!_pinned && !_recordingHotkey && _isVisible && !WindowsThemeService.IsOurProcessForeground())
+            if (!_pinned && _recordingHotkeyId == 0 && _isVisible && !WindowsThemeService.IsOurProcessForeground())
             {
                 HideFlyout();
             }
@@ -336,17 +370,179 @@ public partial class MainWindow : Window
     }
 
     // ------------------------------------------------------------------
-    // Troca suave GPU entre Mixer e Ajustes (ZERO redimensionamento / pixelação)
+    // Seletor de Dispositivo de Saída com 1 clique
+    // ------------------------------------------------------------------
+    private void DeviceSwitchBtn_Click(object sender, RoutedEventArgs e)
+    {
+        if (_devicesOpen)
+        {
+            CloseOutputDevicesPanel();
+            PositionBottomRight();
+            return;
+        }
+
+        OutputDevicesPanel.Children.Clear();
+        var devices = _audio.ListOutputDevices();
+        if (devices.Count == 0)
+        {
+            OutputDevicesPanel.Children.Add(new TextBlock
+            {
+                Text = "Nenhuma saída encontrada.",
+                Foreground = MutedTextBrush,
+                FontSize = 11.5,
+                Margin = new Thickness(8, 4, 8, 4)
+            });
+        }
+        else
+        {
+            foreach (var dev in devices)
+            {
+                var btn = new Button
+                {
+                    Style = (Style)FindResource("IconButtonStyle"),
+                    HorizontalContentAlignment = HorizontalAlignment.Left,
+                    Padding = new Thickness(8, 6, 8, 6),
+                    Margin = new Thickness(0, 1, 0, 1),
+                    Background = dev.IsDefault
+                        ? CreateFrozenBrush(Color.FromArgb(65, _theme.Accent.R, _theme.Accent.G, _theme.Accent.B))
+                        : Brushes.Transparent,
+                    Content = new TextBlock
+                    {
+                        Text = dev.IsDefault ? $"✓  {dev.Name}" : $"    {dev.Name}",
+                        Foreground = PrimaryTextBrush,
+                        FontFamily = new FontFamily("Segoe UI"),
+                        FontSize = 11.5,
+                        FontWeight = dev.IsDefault ? FontWeights.SemiBold : FontWeights.Normal,
+                        TextTrimming = TextTrimming.CharacterEllipsis
+                    }
+                };
+                string targetId = dev.DeviceId;
+                btn.Click += (_, _) =>
+                {
+                    _audio.SetDefaultOutputDevice(targetId);
+                    CloseOutputDevicesPanel();
+                    RefreshAudioState(forceRebuild: true);
+                    PositionBottomRight();
+                };
+                OutputDevicesPanel.Children.Add(btn);
+            }
+        }
+
+        _devicesOpen = true;
+        OutputDevicesBand.Visibility = Visibility.Visible;
+        PositionBottomRight();
+    }
+
+    private void CloseOutputDevicesPanel()
+    {
+        _devicesOpen = false;
+        OutputDevicesBand.Visibility = Visibility.Collapsed;
+    }
+
+    // ------------------------------------------------------------------
+    // Mini Controle de Mídia (⏮ ⏯ ⏭)
+    // ------------------------------------------------------------------
+    private void MediaPrevBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaPrevTrack);
+    private void MediaPlayPauseBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaPlayPause);
+    private void MediaNextBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaNextTrack);
+
+    // ------------------------------------------------------------------
+    // Automações em segundo plano: Ícone Dinâmico + Modo Call + Lembrar Volume
+    // ------------------------------------------------------------------
+    private void RunBackgroundAudioAutomations()
+    {
+        try
+        {
+            bool masterMuted = _audio.GetMasterMute();
+            bool micsMuted = _audio.AreAllMicsMuted();
+            _tray.UpdateIconState(masterMuted, micsMuted);
+
+            if (!_settings.Settings.AutoDuckOnCall && !_settings.Settings.RememberAppVolumes)
+                return;
+
+            var sessions = _isVisible ? _sessions : _audio.RefreshAppSessions();
+
+            // 1. Lembrar volume preferido para apps recém-abertos
+            if (_settings.Settings.RememberAppVolumes)
+            {
+                foreach (var s in sessions)
+                {
+                    if (s.IsSystemSounds) continue;
+                    if (_seenApps.Add(s.AppId) &&
+                        _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
+                    {
+                        _audio.SetAppVolume(s.AppId, savedVol);
+                        s.Volume = savedVol;
+                    }
+                }
+            }
+
+            // 2. Modo Call automático (abaixa música/navegador durante chamadas)
+            if (_settings.Settings.AutoDuckOnCall)
+            {
+                bool callActive = sessions.Any(s =>
+                    !s.Muted &&
+                    CallApps.Contains(s.AppId) &&
+                    s.PeakLevel > 0.02f);
+
+                if (callActive)
+                {
+                    _lastCallSoundUtc = DateTime.UtcNow;
+                    foreach (var s in sessions)
+                    {
+                        if (!MediaApps.Contains(s.AppId) || s.Muted) continue;
+                        if (!_duckedOriginalVolumes.ContainsKey(s.AppId) && s.Volume > 0.22f)
+                        {
+                            _duckedOriginalVolumes[s.AppId] = s.Volume;
+                            _audio.SetAppVolume(s.AppId, 0.20f);
+                        }
+                    }
+                }
+                else if (_duckedOriginalVolumes.Count > 0 &&
+                         (DateTime.UtcNow - _lastCallSoundUtc).TotalSeconds > 4.0)
+                {
+                    RestoreDuckedVolumes();
+                }
+            }
+            else if (_duckedOriginalVolumes.Count > 0)
+            {
+                RestoreDuckedVolumes();
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private void RestoreDuckedVolumes()
+    {
+        foreach (var (appId, origVol) in _duckedOriginalVolumes)
+        {
+            _audio.SetAppVolume(appId, origVol);
+        }
+        _duckedOriginalVolumes.Clear();
+        if (_isVisible) RefreshAudioState(forceRebuild: false);
+    }
+
+    private void ToggleGlobalMicMute()
+    {
+        bool nowMuted = _audio.ToggleAllMicsMute();
+        _tray.UpdateIconState(_audio.GetMasterMute(), nowMuted);
+        if (_isVisible) RefreshAudioState(forceRebuild: false);
+    }
+
+    // ------------------------------------------------------------------
+    // Troca suave GPU entre Mixer e Ajustes
     // ------------------------------------------------------------------
     private void SwitchToSettingsView()
     {
+        CloseOutputDevicesPanel();
         _settingsOpen = true;
         MixerView.Visibility = Visibility.Collapsed;
         SettingsView.Visibility = Visibility.Visible;
         if (_settings.Settings.Animations)
         {
-            var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120));
-            SettingsView.BeginAnimation(OpacityProperty, fade);
+            SettingsView.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
         }
         else
         {
@@ -363,8 +559,7 @@ public partial class MainWindow : Window
         MixerView.Visibility = Visibility.Visible;
         if (!instant && _settings.Settings.Animations)
         {
-            var fade = new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120));
-            MixerView.BeginAnimation(OpacityProperty, fade);
+            MixerView.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
         }
         else
         {
@@ -374,7 +569,7 @@ public partial class MainWindow : Window
     }
 
     // ------------------------------------------------------------------
-    // Áudio, Medidores 60fps e Microfones
+    // Áudio, Medidores e Microfones
     // ------------------------------------------------------------------
     private void RefreshAudioState(bool forceRebuild)
     {
@@ -387,6 +582,22 @@ public partial class MainWindow : Window
         ApplyMasterMuteVisual(masterMuted);
 
         var newSessions = _audio.RefreshAppSessions();
+
+        // Aplica volume salvo automaticamente se um app novo apareceu
+        if (_settings.Settings.RememberAppVolumes)
+        {
+            foreach (var s in newSessions)
+            {
+                if (s.IsSystemSounds) continue;
+                if (_seenApps.Add(s.AppId) &&
+                    _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
+                {
+                    _audio.SetAppVolume(s.AppId, savedVol);
+                    s.Volume = savedVol;
+                }
+            }
+        }
+
         bool appsChanged = forceRebuild ||
             newSessions.Count != _sessions.Count ||
             !newSessions.Select(s => s.AppId).SequenceEqual(_sessions.Select(s => s.AppId), StringComparer.OrdinalIgnoreCase);
@@ -403,6 +614,8 @@ public partial class MainWindow : Window
 
         if (micsChanged) BuildMicRows();
         else SyncMicRows();
+
+        _tray.UpdateIconState(masterMuted, _audio.AreAllMicsMuted());
 
         if ((appsChanged || micsChanged) && _isVisible && !_settingsOpen)
         {
@@ -448,7 +661,7 @@ public partial class MainWindow : Window
             AppsPanel.Children.Add(new TextBlock
             {
                 Text = "Nenhum aplicativo reproduzindo áudio.",
-                Foreground = new SolidColorBrush(Color.FromRgb(140, 136, 162)),
+                Foreground = MutedTextBrush,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 12,
                 Margin = new Thickness(16, 14, 16, 14)
@@ -492,7 +705,7 @@ public partial class MainWindow : Window
             var pctText = new TextBlock
             {
                 Text = pct.ToString(),
-                Foreground = new SolidColorBrush(session.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248)),
+                Foreground = session.Muted ? MutedTextBrush : PrimaryTextBrush,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 15,
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -526,7 +739,7 @@ public partial class MainWindow : Window
                 Text = session.Muted ? "\uE74F" : "\uE767",
                 FontFamily = new FontFamily("Segoe MDL2 Assets"),
                 FontSize = 17,
-                Foreground = new SolidColorBrush(session.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(240, 240, 246))
+                Foreground = session.Muted ? MutedTextBrush : PrimaryTextBrush
             };
         }
 
@@ -546,8 +759,8 @@ public partial class MainWindow : Window
         {
             Width = 22,
             Height = 22,
-            CornerRadius = new CornerRadius(5),
-            Background = new SolidColorBrush(Color.FromArgb(session.Muted ? (byte)90 : (byte)160, _theme.Accent.R, _theme.Accent.G, _theme.Accent.B)),
+            CornerRadius = new CornerRadius(3),
+            Background = CreateFrozenBrush(Color.FromArgb(session.Muted ? (byte)90 : (byte)160, _theme.Accent.R, _theme.Accent.G, _theme.Accent.B)),
             Child = new TextBlock
             {
                 Text = string.IsNullOrEmpty(session.DisplayName) ? "A" : session.DisplayName[..1].ToUpperInvariant(),
@@ -594,7 +807,7 @@ public partial class MainWindow : Window
             MicsPanel.Children.Add(new TextBlock
             {
                 Text = "Nenhum microfone ativo.",
-                Foreground = new SolidColorBrush(Color.FromRgb(140, 136, 162)),
+                Foreground = MutedTextBrush,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 11.5,
                 Margin = new Thickness(16, 10, 16, 10)
@@ -617,7 +830,7 @@ public partial class MainWindow : Window
                 Text = mic.Muted ? "\uF781" : "\uE720",
                 FontFamily = new FontFamily("Segoe MDL2 Assets"),
                 FontSize = 16,
-                Foreground = new SolidColorBrush(mic.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248))
+                Foreground = mic.Muted ? MutedTextBrush : PrimaryTextBrush
             };
 
             var iconBtn = new Button
@@ -647,7 +860,7 @@ public partial class MainWindow : Window
             var pctText = new TextBlock
             {
                 Text = pct.ToString(),
-                Foreground = new SolidColorBrush(mic.Muted ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248)),
+                Foreground = mic.Muted ? MutedTextBrush : PrimaryTextBrush,
                 FontFamily = new FontFamily("Segoe UI"),
                 FontSize = 15,
                 HorizontalAlignment = HorizontalAlignment.Right,
@@ -704,9 +917,9 @@ public partial class MainWindow : Window
     private void ApplyMasterMuteVisual(bool muted)
     {
         MasterMuteGlyph.Text = muted ? "\uE74F" : "\uE767";
-        MasterMuteGlyph.Foreground = new SolidColorBrush(muted ? Color.FromRgb(140, 135, 162) : Color.FromRgb(244, 244, 248));
+        MasterMuteGlyph.Foreground = muted ? MutedTextBrush : PrimaryTextBrush;
         MasterSlider.IsMuted = muted;
-        MasterPercentText.Foreground = new SolidColorBrush(muted ? Color.FromRgb(140, 135, 162) : Color.FromRgb(244, 244, 248));
+        MasterPercentText.Foreground = muted ? MutedTextBrush : PrimaryTextBrush;
     }
 
     private void OnMasterSliderChanged(int pct)
@@ -721,17 +934,25 @@ public partial class MainWindow : Window
         bool newState = !_audio.GetMasterMute();
         _audio.SetMasterMute(newState);
         ApplyMasterMuteVisual(newState);
+        _tray.UpdateIconState(newState, _audio.AreAllMicsMuted());
     }
 
     private void OnAppSliderChanged(string appId, int pct)
     {
         _lastSliderEdit = DateTime.UtcNow;
+        float scalar = pct / 100f;
         if (_appRows.TryGetValue(appId, out var row))
         {
+            row.LastVolumePct = pct;
             row.PercentText.Text = pct.ToString();
-            row.Session.Volume = pct / 100f;
+            row.Session.Volume = scalar;
+            if (!row.Session.IsSystemSounds && _settings.Settings.RememberAppVolumes)
+            {
+                _settings.Settings.SavedAppVolumes[appId] = scalar;
+                ScheduleSaveSettings();
+            }
         }
-        _audio.SetAppVolume(appId, pct / 100f);
+        _audio.SetAppVolume(appId, scalar);
     }
 
     private void ToggleAppMute(string appId)
@@ -740,8 +961,9 @@ public partial class MainWindow : Window
         bool newState = !row.Session.Muted;
         _audio.SetAppMute(appId, newState);
         row.Session.Muted = newState;
+        row.LastMuted = newState;
         row.Slider.IsMuted = newState;
-        row.PercentText.Foreground = new SolidColorBrush(newState ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
+        row.PercentText.Foreground = newState ? MutedTextBrush : PrimaryTextBrush;
         row.IconBtn.Content = CreateAppIconContent(row.Session);
     }
 
@@ -750,6 +972,7 @@ public partial class MainWindow : Window
         _lastSliderEdit = DateTime.UtcNow;
         if (_micRows.TryGetValue(deviceId, out var row))
         {
+            row.LastVolumePct = pct;
             row.PercentText.Text = pct.ToString();
             row.Mic.Volume = pct / 100f;
         }
@@ -762,10 +985,12 @@ public partial class MainWindow : Window
         bool newState = !row.Mic.Muted;
         _audio.SetMicMute(deviceId, newState);
         row.Mic.Muted = newState;
+        row.LastMuted = newState;
         row.Slider.IsMuted = newState;
-        row.PercentText.Foreground = new SolidColorBrush(newState ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
+        row.PercentText.Foreground = newState ? MutedTextBrush : PrimaryTextBrush;
         row.IconGlyph.Text = newState ? "\uF781" : "\uE720";
-        row.IconGlyph.Foreground = new SolidColorBrush(newState ? Color.FromRgb(130, 125, 152) : Color.FromRgb(244, 244, 248));
+        row.IconGlyph.Foreground = newState ? MutedTextBrush : PrimaryTextBrush;
+        _tray.UpdateIconState(_audio.GetMasterMute(), _audio.AreAllMicsMuted());
     }
 
     private void MicsHeader_Click(object sender, MouseButtonEventArgs e)
@@ -814,7 +1039,7 @@ public partial class MainWindow : Window
             if (_audio.StartMicTest())
             {
                 MicTestBtn.Content = "Parar";
-                MicTestBtn.Background = new SolidColorBrush(Color.FromRgb(139, 38, 62));
+                MicTestBtn.Background = DangerActiveBrush;
             }
         }
     }
@@ -823,11 +1048,11 @@ public partial class MainWindow : Window
     {
         _audio.StopMicTest();
         MicTestBtn.Content = "Testar";
-        MicTestBtn.Background = new SolidColorBrush(Color.FromArgb(34, 255, 255, 255));
+        MicTestBtn.Background = SubtleButtonBrush;
     }
 
     // ------------------------------------------------------------------
-    // Ajustes, Atalho Global, Perfis & Presets
+    // Ajustes, Atalhos Globais & Presets
     // ------------------------------------------------------------------
     private void SettingsBtn_Click(object sender, RoutedEventArgs e) => SwitchToSettingsView();
     private void BackToMixerBtn_Click(object sender, RoutedEventArgs e) => SwitchToMixerView();
@@ -840,8 +1065,7 @@ public partial class MainWindow : Window
         _settings.Settings.Alpha = clamped / 100.0;
         BeginAnimation(OpacityProperty, null);
         Opacity = _settings.Settings.Alpha;
-        _opacitySaveTimer.Stop();
-        _opacitySaveTimer.Start();
+        ScheduleSaveSettings();
     }
 
     private void AnimationsCheck_Click(object sender, RoutedEventArgs e)
@@ -849,6 +1073,29 @@ public partial class MainWindow : Window
         _settings.Settings.Animations = AnimationsCheck.IsChecked == true;
         _settings.SaveSettings();
         StatusText.Text = _settings.Settings.Animations ? "Animações ativadas." : "Modo sequinho ativo.";
+    }
+
+    private void MediaControlsCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.ShowMediaControls = MediaControlsCheck.IsChecked == true;
+        MediaBar.Visibility = _settings.Settings.ShowMediaControls ? Visibility.Visible : Visibility.Collapsed;
+        _settings.SaveSettings();
+        StatusText.Text = _settings.Settings.ShowMediaControls ? "Controle de mídia exibido." : "Controle de mídia oculto.";
+    }
+
+    private void RememberVolCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.RememberAppVolumes = RememberVolCheck.IsChecked == true;
+        _settings.SaveSettings();
+        StatusText.Text = _settings.Settings.RememberAppVolumes ? "Lembrar volume ativado." : "Lembrar volume desativado.";
+    }
+
+    private void AutoDuckCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.AutoDuckOnCall = AutoDuckCheck.IsChecked == true;
+        if (!_settings.Settings.AutoDuckOnCall) RestoreDuckedVolumes();
+        _settings.SaveSettings();
+        StatusText.Text = _settings.Settings.AutoDuckOnCall ? "Modo Call ativado." : "Modo Call desativado.";
     }
 
     private void AutostartCheck_Click(object sender, RoutedEventArgs e)
@@ -869,9 +1116,7 @@ public partial class MainWindow : Window
     {
         bool newVal = !WindowsThemeService.IsAutostartEnabled();
         if (WindowsThemeService.SetAutostart(newVal))
-        {
             AutostartCheck.IsChecked = newVal;
-        }
     }
 
     private void PinCheck_Click(object sender, RoutedEventArgs e)
@@ -880,48 +1125,65 @@ public partial class MainWindow : Window
         StatusText.Text = _pinned ? "Painel fixado." : "Oculta ao clicar fora.";
     }
 
-    private void RecordHotkeyBtn_Click(object sender, RoutedEventArgs e)
+    private void OpenHotkeyBtn_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey(HotkeyService.OpenHotkeyId);
+    private void MicHotkeyBtn_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey(HotkeyService.MicMuteHotkeyId);
+
+    private void StartRecordingHotkey(int hotkeyId)
     {
-        if (_recordingHotkey)
+        if (_recordingHotkeyId == hotkeyId)
         {
             CancelRecordHotkey();
             return;
         }
-        // Pausa o atalho atual durante a gravação para o Windows não interceptar a tecla!
-        _hotkey.Unregister();
-        _recordingHotkey = true;
-        HotkeyRecordBtn.Content = "Pressione as teclas...";
-        HotkeyRecordBtn.Background = new SolidColorBrush(_theme.Accent);
-        StatusText.Text = "Pressione a combinação (ex: Ctrl+Alt+M) ou Esc.";
+        if (_recordingHotkeyId != 0) CancelRecordHotkey();
+
+        _hotkey.Unregister(hotkeyId);
+        _recordingHotkeyId = hotkeyId;
+        var btn = hotkeyId == HotkeyService.OpenHotkeyId ? OpenHotkeyBtn : MicHotkeyBtn;
+        btn.Content = "Pressione a tecla...";
+        btn.Background = CreateFrozenBrush(_theme.Accent);
+        StatusText.Text = "Pressione 1 botão especial ou combinação (Esc cancela).";
     }
 
     private void CancelRecordHotkey()
     {
-        if (!_recordingHotkey) return;
-        _recordingHotkey = false;
-        if (!string.IsNullOrEmpty(_settings.Settings.Hotkey))
-        {
-            _hotkey.Register(_settings.Settings.Hotkey);
-        }
-        UpdateHotkeyBadge(_hotkey.CurrentHotkey);
-        StatusText.Text = "Gravação cancelada.";
+        if (_recordingHotkeyId == 0) return;
+        int id = _recordingHotkeyId;
+        _recordingHotkeyId = 0;
+
+        if (id == HotkeyService.OpenHotkeyId && !string.IsNullOrEmpty(_settings.Settings.Hotkey))
+            _hotkey.Register(id, _settings.Settings.Hotkey, () => Dispatcher.Invoke(ToggleFlyout));
+        else if (id == HotkeyService.MicMuteHotkeyId && !string.IsNullOrEmpty(_settings.Settings.MicMuteHotkey))
+            _hotkey.Register(id, _settings.Settings.MicMuteHotkey, () => Dispatcher.Invoke(ToggleGlobalMicMute));
+
+        RefreshHotkeyButtons();
     }
 
-    private void ClearHotkeyBtn_Click(object sender, RoutedEventArgs e)
+    private void ClearOpenHotkeyBtn_Click(object sender, RoutedEventArgs e)
     {
-        _recordingHotkey = false;
-        _hotkey.Unregister();
+        _recordingHotkeyId = 0;
+        _hotkey.Unregister(HotkeyService.OpenHotkeyId);
         _settings.Settings.Hotkey = "";
         _settings.SaveSettings();
-        UpdateHotkeyBadge("");
-        StatusText.Text = "Atalho desativado.";
+        RefreshHotkeyButtons();
+        StatusText.Text = "Atalho de abrir desativado.";
+    }
+
+    private void ClearMicHotkeyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _recordingHotkeyId = 0;
+        _hotkey.Unregister(HotkeyService.MicMuteHotkeyId);
+        _settings.Settings.MicMuteHotkey = "";
+        _settings.SaveSettings();
+        RefreshHotkeyButtons();
+        StatusText.Text = "Atalho de microfone desativado.";
     }
 
     private void OnWindowKeyDown(object sender, KeyEventArgs e)
     {
         Key key = e.Key == Key.System ? e.SystemKey : e.Key;
 
-        if (!_recordingHotkey)
+        if (_recordingHotkeyId == 0)
         {
             if (key == Key.Escape)
             {
@@ -936,6 +1198,7 @@ public partial class MainWindow : Window
         if (key == Key.Escape)
         {
             CancelRecordHotkey();
+            StatusText.Text = "Gravação cancelada.";
             return;
         }
 
@@ -961,27 +1224,39 @@ public partial class MainWindow : Window
         mods.Add(keyName);
         string combo = string.Join("+", mods);
 
-        var (ok, msg) = _hotkey.Register(combo);
-        _recordingHotkey = false;
+        int id = _recordingHotkeyId;
+        _recordingHotkeyId = 0;
+        Action callback = id == HotkeyService.OpenHotkeyId
+            ? () => Dispatcher.Invoke(ToggleFlyout)
+            : () => Dispatcher.Invoke(ToggleGlobalMicMute);
+
+        var (ok, msg) = _hotkey.Register(id, combo, callback);
         if (ok)
         {
-            _settings.Settings.Hotkey = _hotkey.CurrentHotkey;
+            string saved = _hotkey.GetHotkeyLabel(id);
+            if (id == HotkeyService.OpenHotkeyId) _settings.Settings.Hotkey = saved;
+            else _settings.Settings.MicMuteHotkey = saved;
             _settings.SaveSettings();
-            StatusText.Text = $"✓ Atalho salvo: {_hotkey.CurrentHotkey}";
+            StatusText.Text = $"✓ Salvo: {saved}";
         }
         else
         {
-            if (!string.IsNullOrEmpty(_settings.Settings.Hotkey))
-                _hotkey.Register(_settings.Settings.Hotkey);
+            string prev = id == HotkeyService.OpenHotkeyId ? _settings.Settings.Hotkey : _settings.Settings.MicMuteHotkey;
+            if (!string.IsNullOrEmpty(prev)) _hotkey.Register(id, prev, callback);
             StatusText.Text = msg;
         }
-        UpdateHotkeyBadge(_hotkey.CurrentHotkey);
+        RefreshHotkeyButtons();
     }
 
-    private void UpdateHotkeyBadge(string hk)
+    private void RefreshHotkeyButtons()
     {
-        HotkeyRecordBtn.Background = SubtleButtonBrush;
-        HotkeyRecordBtn.Content = string.IsNullOrEmpty(hk) ? "Clique para definir atalho" : hk;
+        string openLbl = _hotkey.GetHotkeyLabel(HotkeyService.OpenHotkeyId);
+        OpenHotkeyBtn.Background = SubtleButtonBrush;
+        OpenHotkeyBtn.Content = string.IsNullOrEmpty(openLbl) ? "Clique para definir" : openLbl;
+
+        string micLbl = _hotkey.GetHotkeyLabel(HotkeyService.MicMuteHotkeyId);
+        MicHotkeyBtn.Background = SubtleButtonBrush;
+        MicHotkeyBtn.Content = string.IsNullOrEmpty(micLbl) ? "Clique para definir" : micLbl;
     }
 
     private void PresetFullBtn_Click(object sender, RoutedEventArgs e) => ApplyPresetFull();
@@ -1099,7 +1374,8 @@ public partial class MainWindow : Window
     {
         SystemEvents.DisplaySettingsChanged -= OnSystemDisplayChanged;
         SystemEvents.UserPreferenceChanged -= OnSystemUserPreferenceChanged;
-        _opacitySaveTimer.Stop();
+        _settingsSaveTimer.Stop();
+        _bgMonitorTimer.Stop();
         _sessionTimer.Stop();
         _meterTimer.Stop();
         _hotkey.Dispose();

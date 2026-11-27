@@ -23,6 +23,13 @@ public sealed class AppSessionInfo
     public bool IsSystemSounds { get; init; }
 }
 
+public sealed class OutputDeviceInfo
+{
+    public string DeviceId { get; init; } = "";
+    public string Name { get; init; } = "";
+    public bool IsDefault { get; init; }
+}
+
 public sealed class MicrophoneInfo
 {
     public string DeviceId { get; init; } = "";
@@ -30,6 +37,24 @@ public sealed class MicrophoneInfo
     public float Volume { get; set; }
     public bool Muted { get; set; }
     public float PeakLevel { get; set; }
+}
+
+[ComImport]
+[Guid("f8679f50-850a-41cf-9c72-430f290290c8")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface IPolicyConfig
+{
+    int GetMixFormat(string pszDeviceName, IntPtr ppFormat);
+    int GetDeviceFormat(string pszDeviceName, bool bDefault, IntPtr ppFormat);
+    int ResetDeviceFormat(string pszDeviceName);
+    int SetDeviceFormat(string pszDeviceName, IntPtr pEndpointFormat, IntPtr mixFormat);
+    int GetProcessingPeriod(string pszDeviceName, bool bDefault, IntPtr pmftDefaultPeriod, IntPtr pmftMinimumPeriod);
+    int SetProcessingPeriod(string pszDeviceName, IntPtr pmftPeriod);
+    int GetShareMode(string pszDeviceName, IntPtr pMode);
+    int SetShareMode(string pszDeviceName, IntPtr mode);
+    int GetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+    int SetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
+    int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string pszDeviceId, int role);
 }
 
 public sealed class AudioService : IDisposable
@@ -45,6 +70,116 @@ public sealed class AudioService : IDisposable
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    public const byte VkMediaNextTrack = 0xB0;
+    public const byte VkMediaPrevTrack = 0xB1;
+    public const byte VkMediaPlayPause = 0xB3;
+
+    public static void SendMediaKey(byte vk)
+    {
+        try
+        {
+            keybd_event(vk, 0, 0, UIntPtr.Zero);
+            keybd_event(vk, 0, 2, UIntPtr.Zero); // KEYEVENTF_KEYUP = 2
+        }
+        catch
+        {
+        }
+    }
+
+    public List<OutputDeviceInfo> ListOutputDevices()
+    {
+        var list = new List<OutputDeviceInfo>();
+        string defaultId = "";
+        try
+        {
+            if (_defaultOutput == null) RefreshDefaultOutput();
+            defaultId = _defaultOutput?.ID ?? "";
+            var devices = _enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
+            foreach (var dev in devices)
+            {
+                try
+                {
+                    list.Add(new OutputDeviceInfo
+                    {
+                        DeviceId = dev.ID,
+                        Name = dev.FriendlyName,
+                        IsDefault = string.Equals(dev.ID, defaultId, StringComparison.OrdinalIgnoreCase)
+                    });
+                }
+                finally
+                {
+                    dev.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
+        return list.OrderByDescending(d => d.IsDefault).ThenBy(d => d.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    public bool SetDefaultOutputDevice(string deviceId)
+    {
+        try
+        {
+            var clsid = new Guid("870af99c-171d-4f9e-af0d-e63df40c2bc9");
+            var type = Type.GetTypeFromCLSID(clsid);
+            if (type == null) return false;
+            var policy = Activator.CreateInstance(type) as IPolicyConfig;
+            if (policy == null) return false;
+
+            policy.SetDefaultEndpoint(deviceId, 0); // eConsole
+            policy.SetDefaultEndpoint(deviceId, 1); // eMultimedia
+            policy.SetDefaultEndpoint(deviceId, 2); // eCommunications
+            RefreshDefaultOutput();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public bool ToggleAllMicsMute()
+    {
+        if (_micCache.Count == 0) RefreshMicrophones();
+        if (_micCache.Count == 0) return false;
+
+        bool anyUnmuted = false;
+        foreach (var dev in _micCache.Values)
+        {
+            try
+            {
+                if (!dev.AudioEndpointVolume.Mute) { anyUnmuted = true; break; }
+            }
+            catch { }
+        }
+
+        bool targetMute = anyUnmuted;
+        foreach (var dev in _micCache.Values)
+        {
+            try { dev.AudioEndpointVolume.Mute = targetMute; } catch { }
+        }
+        return targetMute;
+    }
+
+    public bool AreAllMicsMuted()
+    {
+        if (_micCache.Count == 0) return false;
+        foreach (var dev in _micCache.Values)
+        {
+            try
+            {
+                if (!dev.AudioEndpointVolume.Mute) return false;
+            }
+            catch { }
+        }
+        return true;
+    }
 
     private static string? GetProcessExePathSafe(uint pid)
     {

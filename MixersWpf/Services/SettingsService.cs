@@ -10,30 +10,20 @@ public class UserSettings
     public double Alpha { get; set; } = 0.90;
     public bool Animations { get; set; } = true;
     public string Hotkey { get; set; } = "Ctrl+Alt+M";
+    public string MicMuteHotkey { get; set; } = "";
     public bool MicsExpanded { get; set; } = true;
-}
-
-public class AudioProfile
-{
-    public float MasterVolume { get; set; } = 1.0f;
-    public bool MasterMuted { get; set; }
-    public Dictionary<string, AppProfileEntry> Apps { get; set; } = new();
-}
-
-public class AppProfileEntry
-{
-    public float Volume { get; set; } = 1.0f;
-    public bool Muted { get; set; }
+    public bool ShowMediaControls { get; set; } = true;
+    public bool AutoDuckOnCall { get; set; } = false;
+    public bool RememberAppVolumes { get; set; } = true;
+    public Dictionary<string, float> SavedAppVolumes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public class SettingsService
 {
     private readonly string _baseDir;
     private readonly string _settingsPath;
-    private readonly string _profilesPath;
 
     public UserSettings Settings { get; private set; } = new();
-    public Dictionary<string, AudioProfile> Profiles { get; private set; } = new();
 
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
@@ -47,7 +37,6 @@ public class SettingsService
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "Mixers");
         _settingsPath = Path.Combine(_baseDir, "settings.json");
-        _profilesPath = Path.Combine(_baseDir, "profiles.json");
         Load();
     }
 
@@ -59,26 +48,16 @@ public class SettingsService
             {
                 string json = File.ReadAllText(_settingsPath);
                 var loaded = JsonSerializer.Deserialize<UserSettings>(json, JsonOpts);
-                if (loaded != null) Settings = loaded;
+                if (loaded != null)
+                {
+                    loaded.SavedAppVolumes ??= new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                    Settings = loaded;
+                }
             }
         }
         catch
         {
             Settings = new UserSettings();
-        }
-
-        try
-        {
-            if (File.Exists(_profilesPath))
-            {
-                string json = File.ReadAllText(_profilesPath);
-                var loaded = JsonSerializer.Deserialize<Dictionary<string, AudioProfile>>(json, JsonOpts);
-                if (loaded != null) Profiles = loaded;
-            }
-        }
-        catch
-        {
-            Profiles = new Dictionary<string, AudioProfile>();
         }
     }
 
@@ -88,18 +67,6 @@ public class SettingsService
         {
             Directory.CreateDirectory(_baseDir);
             File.WriteAllText(_settingsPath, JsonSerializer.Serialize(Settings, JsonOpts));
-        }
-        catch
-        {
-        }
-    }
-
-    public void SaveProfiles()
-    {
-        try
-        {
-            Directory.CreateDirectory(_baseDir);
-            File.WriteAllText(_profilesPath, JsonSerializer.Serialize(Profiles, JsonOpts));
         }
         catch
         {

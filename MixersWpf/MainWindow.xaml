@@ -4,7 +4,7 @@
         xmlns:controls="clr-namespace:Mixers.Controls"
         Title="Mixers"
         Width="356"
-        Height="380"
+        Height="400"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -29,15 +29,17 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- Faixa Master (tingida com a cor do Windows) -->
-                <Border x:Name="MasterBand" Grid.Row="0" Padding="14,10,12,12">
+                <Border x:Name="MasterBand" Grid.Row="0" Padding="14,10,12,10">
                     <Grid>
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
@@ -47,21 +49,38 @@
                             <ColumnDefinition Width="38"/>
                         </Grid.ColumnDefinitions>
 
+                        <!-- Cabeçalho: Seletor de Saída + Engrenagem + Ocultar -->
                         <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
-                            <TextBlock x:Name="DeviceNameText"
-                                       Grid.Column="0"
-                                       Text="Alto-falantes"
-                                       Foreground="#F4F4F8"
-                                       FontFamily="Segoe UI"
-                                       FontSize="12.5"
-                                       TextTrimming="CharacterEllipsis"
-                                       VerticalAlignment="Center"
-                                       Margin="2,0,8,0"/>
+                            <Button x:Name="DeviceSwitchBtn"
+                                    Grid.Column="0"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    HorizontalAlignment="Left"
+                                    Padding="4,2,6,2"
+                                    Margin="-4,0,6,0"
+                                    ToolTip="Clique para trocar o dispositivo de saída"
+                                    Click="DeviceSwitchBtn_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock x:Name="DeviceNameText"
+                                               Text="Alto-falantes"
+                                               Foreground="#F4F4F8"
+                                               FontFamily="Segoe UI"
+                                               FontSize="12.5"
+                                               MaxWidth="240"
+                                               TextTrimming="CharacterEllipsis"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Text="&#xE70D;"
+                                               FontFamily="Segoe MDL2 Assets"
+                                               FontSize="9"
+                                               Foreground="#C8C4D8"
+                                               Margin="5,2,0,0"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Button>
 
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button x:Name="SettingsBtn"
@@ -81,6 +100,7 @@
                             </StackPanel>
                         </Grid>
 
+                        <!-- Linha do Master Slider -->
                         <Button x:Name="MasterMuteBtn"
                                 Grid.Row="1" Grid.Column="0"
                                 Style="{StaticResource IconButtonStyle}"
@@ -107,12 +127,40 @@
                                    FontSize="17"
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"/>
+
+                        <!-- Mini Controle de Mídia discreto (⏮ ⏯ ⏭) -->
+                        <StackPanel x:Name="MediaBar"
+                                    Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Center"
+                                    Margin="0,4,0,-2">
+                            <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Faixa anterior" Click="MediaPrevBtn_Click">
+                                <TextBlock Text="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
+                            </Button>
+                            <Button Style="{StaticResource IconButtonStyle}" Width="34" Height="22" Margin="4,0" ToolTip="Tocar / Pausar" Click="MediaPlayPauseBtn_Click">
+                                <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#F4F4F8"/>
+                            </Button>
+                            <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Próxima faixa" Click="MediaNextBtn_Click">
+                                <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
+                            </Button>
+                        </StackPanel>
                     </Grid>
+                </Border>
+
+                <!-- Painel suspenso inline para trocar dispositivo de saída (oculto por padrão) -->
+                <Border x:Name="OutputDevicesBand"
+                        Grid.Row="1"
+                        Visibility="Collapsed"
+                        Background="#DD141220"
+                        BorderBrush="#33FFFFFF"
+                        BorderThickness="0,1,0,1"
+                        Padding="8,6">
+                    <StackPanel x:Name="OutputDevicesPanel"/>
                 </Border>
 
                 <!-- Banner discreto de atualização -->
                 <Border x:Name="UpdateBanner"
-                        Grid.Row="1"
+                        Grid.Row="2"
                         Visibility="Collapsed"
                         Background="#CC1E1A33"
                         Padding="14,6,12,6">
@@ -138,8 +186,8 @@
                     </Grid>
                 </Border>
 
-                <!-- Lista limpa de Aplicativos (scroll invisível com roda do mouse) -->
-                <Border x:Name="AppsListBand" Grid.Row="2">
+                <!-- Lista limpa de Aplicativos -->
+                <Border x:Name="AppsListBand" Grid.Row="3">
                     <ScrollViewer VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled"
                                   Padding="0,4,0,4">
@@ -147,8 +195,8 @@
                     </ScrollViewer>
                 </Border>
 
-                <!-- Faixa de Microfones (2º bloco no padrão da referência) -->
-                <Border x:Name="MicsHeaderBand" Grid.Row="3" Padding="14,7,12,7" Cursor="Hand" MouseLeftButtonDown="MicsHeader_Click">
+                <!-- Faixa de Microfones -->
+                <Border x:Name="MicsHeaderBand" Grid.Row="4" Padding="14,7,12,7" Cursor="Hand" MouseLeftButtonDown="MicsHeader_Click">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -182,7 +230,7 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="MicsListBand" Grid.Row="4" MaxHeight="138" Padding="0,3,0,6">
+                <Border x:Name="MicsListBand" Grid.Row="5" MaxHeight="138" Padding="0,3,0,6">
                     <ScrollViewer VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled">
                         <StackPanel x:Name="MicsPanel"/>
@@ -190,7 +238,7 @@
                 </Border>
             </Grid>
 
-            <!-- ==================== VIEW 2: AJUSTES (troca limpa GPU, zero pixelação) ==================== -->
+            <!-- ==================== VIEW 2: AJUSTES ==================== -->
             <Grid x:Name="SettingsView" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -223,7 +271,7 @@
 
                         <TextBlock x:Name="VersionBadgeText"
                                    Grid.Column="2"
-                                   Text="v1.0.0"
+                                   Text="v2.0.0"
                                    Foreground="#C8C4D8"
                                    FontFamily="Segoe UI"
                                    FontSize="11"
@@ -231,12 +279,12 @@
                     </Grid>
                 </Border>
 
-                <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,14,16,12">
+                <Border x:Name="SettingsBodyBand" Grid.Row="1" Padding="16,12,16,10">
                     <ScrollViewer VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Disabled">
                         <StackPanel>
                             <!-- Opacidade -->
-                            <Grid Margin="0,0,0,14">
+                            <Grid Margin="0,0,0,12">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
@@ -247,77 +295,46 @@
                                 <TextBlock x:Name="OpacityPercentText" Grid.Column="2" Text="90%" Foreground="#F4F4F8" FontFamily="Segoe UI" FontSize="12" HorizontalAlignment="Right" VerticalAlignment="Center"/>
                             </Grid>
 
-                            <!-- Switches limpos -->
-                            <CheckBox x:Name="AnimationsCheck"
-                                      Style="{StaticResource ModernCheckBoxStyle}"
-                                      Content="Animações suaves"
-                                      Margin="0,0,0,11"
-                                      Click="AnimationsCheck_Click"/>
+                            <!-- Switches -->
+                            <CheckBox x:Name="AnimationsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Animações suaves" Margin="0,0,0,9" Click="AnimationsCheck_Click"/>
+                            <CheckBox x:Name="MediaControlsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mini controle de mídia (⏮ ⏯ ⏭)" Margin="0,0,0,9" Click="MediaControlsCheck_Click"/>
+                            <CheckBox x:Name="RememberVolCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Lembrar volume por aplicativo" Margin="0,0,0,9" Click="RememberVolCheck_Click"/>
+                            <CheckBox x:Name="AutoDuckCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Modo Call (baixar música em chamada)" Margin="0,0,0,9" Click="AutoDuckCheck_Click"/>
+                            <CheckBox x:Name="AutostartCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Iniciar com o Windows" Margin="0,0,0,9" Click="AutostartCheck_Click"/>
+                            <CheckBox x:Name="PinCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Fixar painel na tela" Margin="0,0,0,14" Click="PinCheck_Click"/>
 
-                            <CheckBox x:Name="AutostartCheck"
-                                      Style="{StaticResource ModernCheckBoxStyle}"
-                                      Content="Iniciar com o Windows"
-                                      Margin="0,0,0,11"
-                                      Click="AutostartCheck_Click"/>
-
-                            <CheckBox x:Name="PinCheck"
-                                      Style="{StaticResource ModernCheckBoxStyle}"
-                                      Content="Fixar painel na tela"
-                                      Margin="0,0,0,16"
-                                      Click="PinCheck_Click"/>
-
-                            <!-- Atalho Global simplificado (aceita 1 botão especial ou combinação) -->
-                            <TextBlock Text="Atalho para abrir / ocultar"
-                                       Foreground="#A8A4B8"
-                                       FontFamily="Segoe UI"
-                                       FontSize="11"
-                                       Margin="0,0,0,2"/>
-
-                            <TextBlock Text="Aceita 1 tecla/botão especial ou combinação (ex: Ctrl+Alt+M)"
-                                       Foreground="#7A768C"
-                                       FontFamily="Segoe UI"
-                                       FontSize="10"
-                                       Margin="0,0,0,6"/>
-
-                            <Grid Margin="0,0,0,16">
+                            <!-- Atalho 1: Abrir / Ocultar -->
+                            <TextBlock Text="Atalho: Abrir / ocultar Mixers" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,4"/>
+                            <Grid Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-
-                                <Button x:Name="HotkeyRecordBtn"
-                                        Grid.Column="0"
-                                        Content="Ctrl+Alt+M"
-                                        Style="{StaticResource PillButtonStyle}"
-                                        Height="30"
-                                        FontSize="12"
-                                        FontWeight="SemiBold"
-                                        HorizontalContentAlignment="Center"
-                                        ToolTip="Clique e pressione qualquer botão especial do teclado ou combinação"
-                                        Click="RecordHotkeyBtn_Click"/>
-
-                                <Button x:Name="ClearHotkeyBtn"
-                                        Grid.Column="1"
-                                        Style="{StaticResource IconButtonStyle}"
-                                        Width="30" Height="30"
-                                        Margin="6,0,0,0"
-                                        ToolTip="Desativar atalho"
-                                        Click="ClearHotkeyBtn_Click">
+                                <Button x:Name="OpenHotkeyBtn" Grid.Column="0" Content="Ctrl+Alt+M" Style="{StaticResource PillButtonStyle}" Height="28" FontSize="11.5" FontWeight="SemiBold" Click="OpenHotkeyBtn_Click"/>
+                                <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" Width="28" Height="28" Margin="6,0,0,0" ToolTip="Desativar" Click="ClearOpenHotkeyBtn_Click">
                                     <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
                                 </Button>
                             </Grid>
 
-                            <!-- Ações rápidas (3 colunas simétricas) -->
-                            <TextBlock Text="Ações rápidas"
-                                       Foreground="#A8A4B8"
-                                       FontFamily="Segoe UI"
-                                       FontSize="11"
-                                       Margin="0,0,0,6"/>
+                            <!-- Atalho 2: Mutar Microfone -->
+                            <TextBlock Text="Atalho: Mutar / desmutar microfone" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,4"/>
+                            <Grid Margin="0,0,0,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="MicHotkeyBtn" Grid.Column="0" Content="Clique para definir" Style="{StaticResource PillButtonStyle}" Height="28" FontSize="11.5" FontWeight="SemiBold" Click="MicHotkeyBtn_Click"/>
+                                <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" Width="28" Height="28" Margin="6,0,0,0" ToolTip="Desativar" Click="ClearMicHotkeyBtn_Click">
+                                    <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
+                                </Button>
+                            </Grid>
 
+                            <!-- Ações rápidas -->
+                            <TextBlock Text="Ações rápidas" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,6"/>
                             <UniformGrid Columns="3">
-                                <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Height="28" Margin="0,0,4,0" Click="PresetFullBtn_Click"/>
-                                <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Height="28" Margin="2,0,2,0" Click="PresetFocusBtn_Click"/>
-                                <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Height="28" Background="#887F1D2D" Margin="4,0,0,0" Click="PresetMuteBtn_Click"/>
+                                <Button Content="100% Tudo" Style="{StaticResource PillButtonStyle}" Height="27" Margin="0,0,4,0" Click="PresetFullBtn_Click"/>
+                                <Button Content="Foco 30%" Style="{StaticResource PillButtonStyle}" Height="27" Margin="2,0,2,0" Click="PresetFocusBtn_Click"/>
+                                <Button Content="Mutar Apps" Style="{StaticResource PillButtonStyle}" Height="27" Background="#887F1D2D" Margin="4,0,0,0" Click="PresetMuteBtn_Click"/>
                             </UniformGrid>
                         </StackPanel>
                     </ScrollViewer>
@@ -332,7 +349,7 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock x:Name="StatusText"
-                                   Text="Mixers v1.0.0"
+                                   Text="Mixers v2.0.0"
                                    Foreground="#A8A4B8"
                                    FontFamily="Segoe UI"
                                    FontSize="10.5"

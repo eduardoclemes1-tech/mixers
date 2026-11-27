@@ -9,8 +9,10 @@ namespace Mixers.Services;
 
 public sealed class HotkeyService : IDisposable
 {
+    public const int OpenHotkeyId = 0x4D49;     // "MI"
+    public const int MicMuteHotkeyId = 0x4D4D;  // "MM"
+
     private const int WmHotkey = 0x0312;
-    private const int HotkeyId = 0x4D49; // "MI"
     private const uint ModAlt = 0x0001;
     private const uint ModControl = 0x0002;
     private const uint ModShift = 0x0004;
@@ -23,17 +25,10 @@ public sealed class HotkeyService : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
-    private readonly Action _onTriggered;
+    private readonly Dictionary<int, Action> _callbacks = new();
+    private readonly Dictionary<int, string> _registeredLabels = new();
     private HwndSource? _source;
     private IntPtr _hwnd;
-    private bool _registered;
-
-    public string CurrentHotkey { get; private set; } = "";
-
-    public HotkeyService(Action onTriggered)
-    {
-        _onTriggered = onTriggered;
-    }
 
     public void Attach(Window window)
     {
@@ -43,47 +38,61 @@ public sealed class HotkeyService : IDisposable
         _source?.AddHook(WndProc);
     }
 
-    public (bool Ok, string Message) Register(string hotkeyStr)
+    public string GetHotkeyLabel(int id)
+        => _registeredLabels.TryGetValue(id, out var lbl) ? lbl : "";
+
+    public (bool Ok, string Message) Register(int id, string hotkeyStr, Action callback)
     {
-        Unregister();
+        Unregister(id);
+        _callbacks[id] = callback;
 
         string clean = (hotkeyStr ?? "").Trim();
         if (string.IsNullOrEmpty(clean))
         {
-            CurrentHotkey = "";
             return (true, "Atalho desativado.");
         }
 
         if (!TryParseHotkey(clean, out uint mods, out uint vk, out string normalized))
-            return (false, "Atalho inválido (use ex: Ctrl+Alt+M).");
+            return (false, "Atalho inválido.");
 
         if (_hwnd == IntPtr.Zero)
             return (false, "Janela ainda não inicializada.");
 
-        if (!RegisterHotKey(_hwnd, HotkeyId, mods | ModNoRepeat, vk))
-            return (false, "Atalho já em uso por outro app.");
+        if (!RegisterHotKey(_hwnd, id, mods | ModNoRepeat, vk))
+            return (false, "Tecla já em uso por outro app.");
 
-        _registered = true;
-        CurrentHotkey = normalized;
+        _registeredLabels[id] = normalized;
         return (true, $"Atalho ativo: {normalized}");
     }
 
-    public void Unregister()
+    public void Unregister(int id)
     {
-        if (_registered && _hwnd != IntPtr.Zero)
+        if (_registeredLabels.ContainsKey(id) && _hwnd != IntPtr.Zero)
         {
-            UnregisterHotKey(_hwnd, HotkeyId);
-            _registered = false;
+            UnregisterHotKey(_hwnd, id);
         }
-        CurrentHotkey = "";
+        _registeredLabels.Remove(id);
+    }
+
+    public void UnregisterAll()
+    {
+        foreach (int id in new List<int>(_registeredLabels.Keys))
+        {
+            if (_hwnd != IntPtr.Zero) UnregisterHotKey(_hwnd, id);
+        }
+        _registeredLabels.Clear();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && wParam.ToInt32() == HotkeyId)
+        if (msg == WmHotkey)
         {
-            _onTriggered();
-            handled = true;
+            int id = wParam.ToInt32();
+            if (_callbacks.TryGetValue(id, out var cb))
+            {
+                cb();
+                handled = true;
+            }
         }
         return IntPtr.Zero;
     }
@@ -158,7 +167,7 @@ public sealed class HotkeyService : IDisposable
 
     public void Dispose()
     {
-        Unregister();
+        UnregisterAll();
         _source?.RemoveHook(WndProc);
     }
 }
