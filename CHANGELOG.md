@@ -3,6 +3,11 @@
 Todas as mudanças relevantes deste projeto são documentadas neste arquivo.
 O formato segue o padrão [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o versionamento segue [Semantic Versioning](https://semver.org/lang/pt-BR/).
 
+## [2.2.1] - 2026-11-27
+
+### Corrigido
+- Botão de Play/Pause no mini controle de mídia agora alterna dinamicamente o ícone (`▶` / `⏸`) e o tooltip de acordo com o estado real de reprodução do Windows (SMTC), com resposta imediata ao clique e ressincronização ao trocar de faixa.
+
 ## [2.2.0] - 2026-11-27
 
 ### Adicionado

@@ -145,8 +145,8 @@
                                 <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Faixa anterior" Click="MediaPrevBtn_Click">
                                     <TextBlock Text="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
                                 </Button>
-                                <Button Style="{StaticResource IconButtonStyle}" Width="34" Height="22" Margin="4,0" ToolTip="Tocar / Pausar" Click="MediaPlayPauseBtn_Click">
-                                    <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#F4F4F8"/>
+                                <Button x:Name="MediaPlayPauseBtn" Style="{StaticResource IconButtonStyle}" Width="34" Height="22" Margin="4,0" ToolTip="Tocar / Pausar" Click="MediaPlayPauseBtn_Click">
+                                    <TextBlock x:Name="MediaPlayPauseGlyph" Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#F4F4F8"/>
                                 </Button>
                                 <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Próxima faixa" Click="MediaNextBtn_Click">
                                     <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>

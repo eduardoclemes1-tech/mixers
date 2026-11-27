@@ -66,6 +66,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastCallSoundUtc = DateTime.MinValue;
     private bool _pendingDevicesRebuild;
+    private bool _isMediaPlaying;
 
     private List<AppSessionInfo> _sessions = new();
     private List<MicrophoneInfo> _mics = new();
@@ -495,9 +496,37 @@ public partial class MainWindow : Window
     // ------------------------------------------------------------------
     // Mini Controle de Mídia (⏮ ⏯ ⏭)
     // ------------------------------------------------------------------
-    private void MediaPrevBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaPrevTrack);
-    private void MediaPlayPauseBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaPlayPause);
-    private void MediaNextBtn_Click(object sender, RoutedEventArgs e) => AudioService.SendMediaKey(AudioService.VkMediaNextTrack);
+    private void MediaPrevBtn_Click(object sender, RoutedEventArgs e)
+    {
+        AudioService.SendMediaKey(AudioService.VkMediaPrevTrack);
+        _ = RefreshMediaAfterDelayAsync(350);
+    }
+
+    private void MediaPlayPauseBtn_Click(object sender, RoutedEventArgs e)
+    {
+        AudioService.SendMediaKey(AudioService.VkMediaPlayPause);
+        _isMediaPlaying = !_isMediaPlaying;
+        UpdateMediaPlayPauseGlyph();
+        _ = RefreshMediaAfterDelayAsync(280);
+    }
+
+    private void MediaNextBtn_Click(object sender, RoutedEventArgs e)
+    {
+        AudioService.SendMediaKey(AudioService.VkMediaNextTrack);
+        _ = RefreshMediaAfterDelayAsync(350);
+    }
+
+    private void UpdateMediaPlayPauseGlyph()
+    {
+        MediaPlayPauseGlyph.Text = _isMediaPlaying ? "\uE769" : "\uE768";
+        MediaPlayPauseBtn.ToolTip = _isMediaPlaying ? "Pausar" : "Tocar";
+    }
+
+    private async Task RefreshMediaAfterDelayAsync(int delayMs)
+    {
+        await Task.Delay(delayMs);
+        await RefreshMediaTitleAsync();
+    }
 
     // ------------------------------------------------------------------
     // Notificações em tempo real (WASAPI) + Automações em segundo plano
@@ -728,14 +757,17 @@ public partial class MainWindow : Window
     private async Task RefreshMediaTitleAsync()
     {
         if (!_settings.Settings.ShowMediaControls || !_isVisible) return;
-        string title = await MediaInfoService.GetCurrentMediaTitleAsync();
-        if (string.IsNullOrWhiteSpace(title))
+        var state = await MediaInfoService.GetCurrentMediaStateAsync();
+        _isMediaPlaying = state.IsPlaying;
+        UpdateMediaPlayPauseGlyph();
+
+        if (string.IsNullOrWhiteSpace(state.Title))
         {
             MediaTitleText.Visibility = Visibility.Collapsed;
         }
         else
         {
-            MediaTitleText.Text = title;
+            MediaTitleText.Text = state.Title;
             MediaTitleText.Visibility = Visibility.Visible;
         }
     }
