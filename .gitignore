@@ -1,16 +1,21 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-.venv/
-venv/
-env/
-build/
-dist/
-*.spec
+# Build / Publish (.NET / WPF)
 bin/
 obj/
+dist/
+out/
+PublishProfiles/
+
+# Visual Studio / Rider / VS Code
 .vs/
-.pytest_cache/
-.DS_Store
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.cache
+*.log
+
+# Windows / macOS
 Thumbs.db
+Desktop.ini
+.DS_Store

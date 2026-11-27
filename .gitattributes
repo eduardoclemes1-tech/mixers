@@ -1,0 +1,19 @@
+# Normalização de finais de linha (Git padrão Windows/.NET)
+* text=auto eol=lf
+
+# Scripts Windows precisam de CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Arquivos de projeto e código C#/XAML
+*.cs text diff=csharp
+*.xaml text
+*.csproj text
+*.sln text eol=crlf
+
+# Binários
+*.exe binary
+*.dll binary
+*.png binary
+*.ico binary
+*.zip binary
