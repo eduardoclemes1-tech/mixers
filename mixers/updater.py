@@ -19,6 +19,7 @@ from mixers import __version__
 
 GITHUB_OWNER = "eduardoclemes1-tech"
 GITHUB_REPO = "mixers"
+LATEST_WEB_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 LATEST_RELEASE_URL = (
     f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 )
@@ -173,11 +174,56 @@ def _clean_env_for_relaunch() -> dict[str, str]:
     return cleaned
 
 
+def _check_via_web_redirect(current_version: str, timeout: float) -> UpdateInfo | None:
+    """
+    Descobre a última versão seguindo o redirect de /releases/latest (sem limite de API!).
+    Ex: .../releases/latest -> .../releases/tag/v0.7.1
+    """
+    req = urllib.request.Request(
+        LATEST_WEB_URL,
+        headers={"User-Agent": f"Mixers/{current_version}"},
+        method="HEAD",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_build_ssl_context()) as resp:
+            final_url = resp.geturl()
+    except Exception:
+        # Alguns servidores/proxies bloqueiam HEAD; tenta GET leve
+        req_get = urllib.request.Request(
+            LATEST_WEB_URL,
+            headers={"User-Agent": f"Mixers/{current_version}"},
+        )
+        with urllib.request.urlopen(req_get, timeout=timeout, context=_build_ssl_context()) as resp:
+            final_url = resp.geturl()
+
+    match = re.search(r"/releases/tag/([^/?#]+)", final_url)
+    if not match:
+        raise ValueError("Não foi possível identificar a tag da última Release.")
+
+    tag_name = match.group(1).strip()
+    if not is_newer_version(tag_name, current_version):
+        return None
+
+    download_url = (
+        f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/{tag_name}/Mixers.exe"
+    )
+    return UpdateInfo(
+        version=tag_name.lstrip("vV"),
+        download_url=download_url,
+        release_url=final_url,
+    )
+
+
 def check_for_update(
     current_version: str = __version__,
     timeout: float = 8.0,
 ) -> UpdateInfo | None:
-    """Consulta a última Release no GitHub e retorna UpdateInfo se houver versão nova."""
+    """Consulta a última Release no GitHub (redirect sem rate-limit -> API -> PowerShell)."""
+    try:
+        return _check_via_web_redirect(current_version=current_version, timeout=timeout)
+    except Exception:
+        pass
+
     data = _fetch_latest_release_json(current_version=current_version, timeout=timeout)
 
     tag_name = str(data.get("tag_name", "")).strip()
