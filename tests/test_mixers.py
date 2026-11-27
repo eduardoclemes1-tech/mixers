@@ -6,6 +6,7 @@ import unittest
 
 from mixers.audio_backend import DemoAudioBackend, clamp_volume, format_app_name
 from mixers.profiles import ProfileManager
+from mixers.windows_integration import get_work_area
 
 
 class TestAudioHelpers(unittest.TestCase):
@@ -33,6 +34,13 @@ class TestDemoBackendAndProfiles(unittest.TestCase):
         sessions = {s.app_id: s for s in backend.list_app_sessions()}
         self.assertAlmostEqual(sessions["chrome.exe"].volume, 0.25)
         self.assertTrue(sessions["chrome.exe"].muted)
+        self.assertEqual(sessions["chrome.exe"].peak_level, 0.0)
+        self.assertTrue(len(backend.get_output_device_name()) > 0)
+        self.assertEqual(backend.get_master_peak(), 0.0)
+
+        left, top, right, bottom = get_work_area(1920, 1080)
+        self.assertGreater(right, left)
+        self.assertGreater(bottom, top)
 
     def test_profile_save_apply_delete(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

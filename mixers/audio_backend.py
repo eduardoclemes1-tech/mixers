@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import math
 import sys
+import time
 from typing import Dict, List
 
 
@@ -32,10 +34,15 @@ class AppAudioSession:
     volume: float  # 0.0 a 1.0
     muted: bool
     pids: List[int]
+    peak_level: float = 0.0  # 0.0 a 1.0 (nível de som em tempo real)
 
 
 class AudioBackend(ABC):
     """Interface abstrata para backends de áudio."""
+
+    @abstractmethod
+    def get_output_device_name(self) -> str:
+        """Retorna o nome amigável do dispositivo de saída padrão."""
 
     @abstractmethod
     def get_master_volume(self) -> float:
@@ -52,6 +59,10 @@ class AudioBackend(ABC):
     @abstractmethod
     def set_master_mute(self, muted: bool) -> None:
         """Ativa ou desativa o mudo geral."""
+
+    @abstractmethod
+    def get_master_peak(self) -> float:
+        """Retorna o nível de pico atual da saída principal (0.0 a 1.0)."""
 
     @abstractmethod
     def list_app_sessions(self) -> List[AppAudioSession]:
@@ -81,32 +92,59 @@ class WindowsAudioBackend(AudioBackend):
         from ctypes import POINTER, cast
         import comtypes
         from comtypes import CLSCTX_ALL
-        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume, IAudioMeterInformation
 
         self._comtypes = comtypes
         self._AudioUtilities = AudioUtilities
         self._IAudioEndpointVolume = IAudioEndpointVolume
+        self._IAudioMeterInformation = IAudioMeterInformation
         self._CLSCTX_ALL = CLSCTX_ALL
         self._POINTER = POINTER
         self._cast = cast
 
         comtypes.CoInitialize()
-        self._master = self._init_master_endpoint()
+        self._master = None
+        self._master_meter = None
+        self._device_name = "Saída Padrão"
+        self._init_master_endpoint()
 
-    def _init_master_endpoint(self):
+    def _init_master_endpoint(self) -> None:
         devices = self._AudioUtilities.GetSpeakers()
+
+        # Nome amigável do dispositivo (quando disponível)
+        friendly = getattr(devices, "FriendlyName", None)
+        if friendly:
+            self._device_name = str(friendly)
+        else:
+            self._device_name = "Dispositivo Padrão"
+
         if hasattr(devices, "EndpointVolume"):
-            return devices.EndpointVolume
-        interface = devices.Activate(
-            self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None
-        )
-        return self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
+            self._master = devices.EndpointVolume
+        else:
+            interface = devices.Activate(
+                self._IAudioEndpointVolume._iid_, self._CLSCTX_ALL, None
+            )
+            self._master = self._cast(interface, self._POINTER(self._IAudioEndpointVolume))
+
+        try:
+            raw_dev = getattr(devices, "_dev", devices)
+            meter_iface = raw_dev.Activate(
+                self._IAudioMeterInformation._iid_, self._CLSCTX_ALL, None
+            )
+            self._master_meter = self._cast(
+                meter_iface, self._POINTER(self._IAudioMeterInformation)
+            )
+        except Exception:
+            self._master_meter = None
+
+    def get_output_device_name(self) -> str:
+        return self._device_name
 
     def get_master_volume(self) -> float:
         try:
             return clamp_volume(self._master.GetMasterVolumeLevelScalar())
         except Exception:
-            self._master = self._init_master_endpoint()
+            self._init_master_endpoint()
             return clamp_volume(self._master.GetMasterVolumeLevelScalar())
 
     def set_master_volume(self, volume: float) -> None:
@@ -114,14 +152,14 @@ class WindowsAudioBackend(AudioBackend):
         try:
             self._master.SetMasterVolumeLevelScalar(level, None)
         except Exception:
-            self._master = self._init_master_endpoint()
+            self._init_master_endpoint()
             self._master.SetMasterVolumeLevelScalar(level, None)
 
     def get_master_mute(self) -> bool:
         try:
             return bool(self._master.GetMute())
         except Exception:
-            self._master = self._init_master_endpoint()
+            self._init_master_endpoint()
             return bool(self._master.GetMute())
 
     def set_master_mute(self, muted: bool) -> None:
@@ -129,8 +167,23 @@ class WindowsAudioBackend(AudioBackend):
         try:
             self._master.SetMute(val, None)
         except Exception:
-            self._master = self._init_master_endpoint()
+            self._init_master_endpoint()
             self._master.SetMute(val, None)
+
+    def get_master_peak(self) -> float:
+        if self._master_meter is None:
+            return 0.0
+        try:
+            return clamp_volume(self._master_meter.GetPeakValue())
+        except Exception:
+            return 0.0
+
+    def _get_session_peak(self, session) -> float:
+        try:
+            meter = session._ctl.QueryInterface(self._IAudioMeterInformation)
+            return clamp_volume(meter.GetPeakValue())
+        except Exception:
+            return 0.0
 
     def _get_session_app_id(self, session) -> tuple[str, str, int | None]:
         proc = session.Process
@@ -157,6 +210,8 @@ class WindowsAudioBackend(AudioBackend):
             except Exception:
                 continue
 
+            peak = 0.0 if muted else self._get_session_peak(session)
+
             if app_id not in grouped:
                 grouped[app_id] = AppAudioSession(
                     app_id=app_id,
@@ -164,10 +219,12 @@ class WindowsAudioBackend(AudioBackend):
                     volume=vol,
                     muted=muted,
                     pids=[pid] if pid is not None else [],
+                    peak_level=peak,
                 )
             else:
                 if pid is not None and pid not in grouped[app_id].pids:
                     grouped[app_id].pids.append(pid)
+                grouped[app_id].peak_level = max(grouped[app_id].peak_level, peak)
 
         return sorted(
             grouped.values(),
@@ -214,6 +271,9 @@ class DemoAudioBackend(AudioBackend):
             "vlc.exe": AppAudioSession("vlc.exe", "Vlc", 0.40, True, [8901]),
         }
 
+    def get_output_device_name(self) -> str:
+        return "Alto-falantes (Demo)"
+
     def get_master_volume(self) -> float:
         return self._master_volume
 
@@ -226,20 +286,30 @@ class DemoAudioBackend(AudioBackend):
     def set_master_mute(self, muted: bool) -> None:
         self._master_muted = bool(muted)
 
+    def get_master_peak(self) -> float:
+        if self._master_muted:
+            return 0.0
+        wave = 0.45 + 0.35 * math.sin(time.monotonic() * 4.0)
+        return clamp_volume(wave * self._master_volume)
+
     def list_app_sessions(self) -> List[AppAudioSession]:
-        return sorted(
-            [
+        t = time.monotonic()
+        result: List[AppAudioSession] = []
+        for idx, a in enumerate(self._apps.values()):
+            peak = 0.0
+            if not a.muted and not self._master_muted:
+                peak = clamp_volume((0.35 + 0.45 * abs(math.sin(t * (2.5 + idx)))) * a.volume)
+            result.append(
                 AppAudioSession(
                     app_id=a.app_id,
                     display_name=a.display_name,
                     volume=a.volume,
                     muted=a.muted,
                     pids=list(a.pids),
+                    peak_level=peak,
                 )
-                for a in self._apps.values()
-            ],
-            key=lambda item: item.display_name.lower(),
-        )
+            )
+        return sorted(result, key=lambda item: item.display_name.lower())
 
     def set_app_volume(self, app_id: str, volume: float) -> None:
         if app_id in self._apps:

@@ -19,6 +19,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Executa com dados simulados (útil para testes sem áudio do Windows).",
     )
+    parser.add_argument(
+        "--minimized",
+        action="store_true",
+        help="Inicia direto em segundo plano na bandeja do sistema.",
+    )
     return parser.parse_args()
 
 
@@ -34,7 +39,11 @@ def main() -> int:
         return 1
 
     backend = create_audio_backend(demo=args.demo)
-    app = MixersApp(backend=backend, demo_mode=args.demo)
+    app = MixersApp(
+        backend=backend,
+        demo_mode=args.demo,
+        start_minimized=args.minimized,
+    )
     app.mainloop()
     return 0
 

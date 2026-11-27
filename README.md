@@ -1,60 +1,56 @@
 # Mixers 🎚️
 
-**Mixers** é um gerenciador de volume por aplicativo feito para **Windows** (Windows 10 e Windows 11).
-
-Com ele você controla rapidamente o volume geral do PC e o som individual de cada aplicativo aberto (navegador, Spotify, Discord, jogos, etc.) em uma interface moderna em tema escuro.
+**Mixers** é um gerenciador de volume por aplicativo para **Windows 10 e Windows 11**, com visual **clean, transparente e flutuante** que fica rodando em **segundo plano na bandeja do sistema** (perto do relógio).
 
 ## Funcionalidades
 
-- **Volume Geral (Master):** controle deslizante e botão de mudo do sistema.
-- **Volume por Aplicativo:** lista automaticamente todos os programas com áudio ativo, com slider individual e botão de mudo.
-- **Busca rápida:** filtre aplicativos pelo nome.
-- **Ações rápidas:**
-  - **100% Tudo:** restaura todos os apps para 100% e tira o mudo.
-  - **Modo Foco (30%):** baixa todos os apps para 30%.
-  - **Mutar Apps:** silencia todos os aplicativos de uma vez.
-- **Perfis personalizados:** salve combinações de volume (ex: *Jogo*, *Reunião*, *Estudo*) e aplique com um clique.
+- **Roda em segundo plano (System Tray):** abre um painel compacto no canto inferior direito ao clicar no ícone perto do relógio, e se recolhe automaticamente ao clicar fora ou apertar `Esc`.
+- **Visual clean e transparente:** tema escuro translúcido com cantos arredondados nativos do Windows 11 e controle deslizante de **Transparência** (65% a 100%).
+- **Interativo em tempo real:** barra visual de nível de som (VU meter) em cada aplicativo e no volume geral, além do nome do dispositivo de saída ativo.
+- **Volume Geral + Por Aplicativo:** controle individual e mudo para cada programa aberto (navegador, Spotify, Discord, jogos, etc.).
+- **Ações rápidas & Perfis:** botões de `100%`, `Foco 30%`, `Mutar`, busca rápida e perfis personalizados salvos no Windows.
+- **Iniciar com o Windows:** opção integrada em **Ajustes** ou no menu do botão direito do ícone da bandeja.
 
-## Como usar no Windows
+## Como baixar só o ZIP pronto (sem instalar Python no Windows)
 
-### Opção 1: Rodar direto com Python
-Pré-requisito: [Python 3.10+](https://www.python.org/downloads/) instalado no Windows.
+Para ativar o build automático do `Mixers-Windows.zip` no GitHub (leva 10 segundos, só faz uma vez):
+1. No repositório no GitHub, clique em **Add file → Create new file**.
+2. Digite o caminho: `.github/workflows/build-windows.yml`
+3. Cole o conteúdo do arquivo [`github_workflow_template.yml`](github_workflow_template.yml) e clique em **Commit changes**.
+4. Vá na aba **Actions**, abra a execução concluída e baixe **`Mixers-Windows-ZIP`**.
+5. Extraia o `.zip` e dê dois cliques em **`Mixers.exe`**!
+
+## Como rodar ou gerar o ZIP localmente no Windows
 
 ```powershell
 git clone https://github.com/eduardoclemes1-tech/mixers.git
 cd mixers
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python main.py
 ```
 
-### Opção 2: Gerar o executável `Mixers.exe` no Windows
-Basta dar dois cliques em `build_windows.bat` ou rodar no PowerShell:
-```powershell
-pip install pyinstaller
-pyinstaller --noconfirm --onefile --windowed --name Mixers --collect-all customtkinter main.py
-```
-O executável será gerado em `dist\Mixers.exe`.
+- **Para gerar `dist\Mixers-Windows.zip` com 1 clique:** dê dois cliques em `build_windows.bat`.
+- **Para rodar direto com Python:**
+  ```powershell
+  pip install -r requirements.txt
+  python main.py
+  ```
 
 ## Estrutura do Projeto
 
 ```text
 mixers/
-├── main.py                # Ponto de entrada do aplicativo
-├── build_windows.bat      # Script de 1 clique para gerar Mixers.exe no Windows
-├── requirements.txt       # Dependências do projeto
+├── main.py                        # Ponto de entrada (--minimized / --demo)
+├── build_windows.bat              # Gera Mixers.exe e Mixers-Windows.zip
+├── github_workflow_template.yml   # Modelo para build automático no GitHub Actions
+├── requirements.txt               # Dependências do projeto
+├── scripts/
+│   └── make_zip.py                # Empacota Mixers.exe + LEIA-ME.txt em ZIP
 ├── mixers/
 │   ├── __init__.py
-│   ├── audio_backend.py   # Integração com áudio do Windows (WASAPI / pycaw)
-│   ├── profiles.py        # Salvar e carregar perfis de volume
-│   └── ui.py              # Interface gráfica (CustomTkinter)
+│   ├── audio_backend.py           # Áudio do Windows (WASAPI / pycaw + VU meter)
+│   ├── windows_integration.py     # Cantos arredondados, área útil e autostart
+│   ├── tray.py                    # Ícone e menu em segundo plano (System Tray)
+│   ├── profiles.py                # Perfis salvos em %APPDATA%\Mixers
+│   └── ui.py                      # Painel clean, transparente e flutuante
 └── tests/
-    └── test_mixers.py     # Testes automatizados
-```
-
-## Rodar os testes
-
-```bash
-python -m unittest discover -s tests -v
+    └── test_mixers.py             # Testes automatizados
 ```
