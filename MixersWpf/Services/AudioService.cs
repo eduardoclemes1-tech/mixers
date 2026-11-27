@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -21,6 +22,7 @@ public sealed class AppSessionInfo
     public bool Muted { get; set; }
     public float PeakLevel { get; set; }
     public bool IsActive { get; set; }
+    public bool HasAudioSession { get; set; } = true;
     public bool IsSystemSounds { get; init; }
     public List<string> SessionInstanceIds { get; } = new();
 }
@@ -57,6 +59,17 @@ internal interface IPolicyConfig
     int GetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
     int SetPropertyValue(string pszDeviceName, bool bFxStore, IntPtr key, IntPtr pv);
     int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string pszDeviceId, int role);
+}
+
+[ComImport]
+[Guid("87CE5498-68D6-44E5-9215-6DA47EF883D8")]
+[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+internal interface ISimpleAudioVolumeCom
+{
+    int SetMasterVolume(float fLevel, ref Guid eventContext);
+    int GetMasterVolume(out float pfLevel);
+    int SetMute([MarshalAs(UnmanagedType.Bool)] bool bMute, ref Guid eventContext);
+    int GetMute([MarshalAs(UnmanagedType.Bool)] out bool pbMute);
 }
 
 public sealed class AudioService : IDisposable
@@ -264,10 +277,56 @@ public sealed class AudioService : IDisposable
 
     private readonly Dictionary<string, List<AudioSessionControl>> _sessionCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<(uint Pid, string SessionId), (string AppId, string DisplayName, string? ExePath)> _sessionMetaCache = new();
+    private readonly ConcurrentDictionary<string, (float? Volume, bool? Muted)> _desiredAppStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MMDevice> _micCache = new(StringComparer.OrdinalIgnoreCase);
     private WasapiCapture? _micTestCapture;
 
     public bool IsMicTesting => _micTestCapture != null;
+
+    public void SetDesiredAppState(string appId, float? volume, bool? muted)
+    {
+        if (string.IsNullOrWhiteSpace(appId) || appId == SystemSoundsId) return;
+        _desiredAppStates.AddOrUpdate(
+            appId,
+            _ => (volume.HasValue ? Math.Clamp(volume.Value, 0f, 1f) : null, muted),
+            (_, prev) => (volume.HasValue ? Math.Clamp(volume.Value, 0f, 1f) : prev.Volume, muted ?? prev.Muted));
+    }
+
+    public void ClearDesiredAppState(string appId)
+    {
+        if (string.IsNullOrWhiteSpace(appId)) return;
+        _desiredAppStates.TryRemove(appId, out _);
+    }
+
+    private void ApplyDesiredStateToNewSession(IAudioSessionControl? newSession)
+    {
+        if (newSession == null || _desiredAppStates.IsEmpty) return;
+        try
+        {
+            if (newSession is not IAudioSessionControl2 ctrl2) return;
+            if (ctrl2.IsSystemSoundsSession() == 0) return;
+
+            ctrl2.GetProcessId(out uint pid);
+            if (pid == 0) return;
+
+            ctrl2.GetSessionIdentifier(out string sessionId);
+            var procSnap = OpenAppsService.CaptureProcessSnapshot();
+            var (appId, _, _) = ResolveAppMetadata(pid, sessionId ?? "", null, procSnap);
+
+            if (_desiredAppStates.TryGetValue(appId, out var desired) &&
+                newSession is ISimpleAudioVolumeCom simpleVol)
+            {
+                Guid ctx = Guid.Empty;
+                if (desired.Volume.HasValue)
+                    simpleVol.SetMasterVolume(Math.Clamp(desired.Volume.Value, 0f, 1f), ref ctx);
+                if (desired.Muted.HasValue)
+                    simpleVol.SetMute(desired.Muted.Value, ref ctx);
+            }
+        }
+        catch
+        {
+        }
+    }
 
     public AudioService()
     {
@@ -323,7 +382,11 @@ public sealed class AudioService : IDisposable
                 try
                 {
                     var mgr = dev.AudioSessionManager;
-                    AudioSessionManager.SessionCreatedDelegate handler = (_, _) => SessionsChanged?.Invoke();
+                    AudioSessionManager.SessionCreatedDelegate handler = (_, newSession) =>
+                    {
+                        ApplyDesiredStateToNewSession(newSession);
+                        SessionsChanged?.Invoke();
+                    };
                     try
                     {
                         mgr.OnSessionCreated += handler;
@@ -547,9 +610,10 @@ public sealed class AudioService : IDisposable
         }
     }
 
-    public List<AppSessionInfo> RefreshAppSessions()
+    public List<AppSessionInfo> RefreshAppSessions(Dictionary<uint, ProcessSnapEntry>? procSnapshot = null)
     {
         EnsureEndpointsReady();
+        var procSnap = procSnapshot ?? OpenAppsService.CaptureProcessSnapshot();
 
         var grouped = new Dictionary<string, AppSessionInfo>(StringComparer.OrdinalIgnoreCase);
         var groupPriority = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -628,9 +692,16 @@ public sealed class AudioService : IDisposable
                         }
                         else
                         {
-                            (appId, displayName, exePath) = ResolveAppMetadata(pid, sessionId, sessionDisplayName);
+                            (appId, displayName, exePath) = ResolveAppMetadata(pid, sessionId, sessionDisplayName, procSnap);
                             _sessionMetaCache[metaKey] = (appId, displayName, exePath);
                         }
+                    }
+
+                    // Ignora processos internos silenciosos do shell (ex: WebView2 do SearchHost)
+                    if (!isSys && OpenAppsService.IsIgnoredShellApp(appId) && state != AudioSessionState.AudioSessionStateActive)
+                    {
+                        try { s.Dispose(); } catch { }
+                        continue;
                     }
 
                     float vol;
@@ -716,7 +787,8 @@ public sealed class AudioService : IDisposable
     private static (string AppId, string DisplayName, string? ExePath) ResolveAppMetadata(
         uint pid,
         string sessionId,
-        string? sessionDisplayName)
+        string? sessionDisplayName,
+        Dictionary<uint, ProcessSnapEntry> procSnapshot)
     {
         string? exePath = GetProcessExePathSafe(pid);
         string? rawName = null;
@@ -724,6 +796,11 @@ public sealed class AudioService : IDisposable
         if (!string.IsNullOrEmpty(exePath))
         {
             rawName = Path.GetFileNameWithoutExtension(exePath);
+        }
+
+        if (string.IsNullOrWhiteSpace(rawName) && procSnapshot.TryGetValue(pid, out var snapEntry))
+        {
+            rawName = snapEntry.ExeName;
         }
 
         if (string.IsNullOrWhiteSpace(rawName))
@@ -753,6 +830,18 @@ public sealed class AudioService : IDisposable
                 rawName = parsedName;
         }
 
+        // Atribui processos auxiliares (ex: msedgewebview2 do WhatsApp, steamwebhelper da Steam) ao app pai real
+        if (!string.IsNullOrWhiteSpace(rawName))
+        {
+            var (_, hostRawName, hostExePath) = OpenAppsService.ResolveHostProcess(pid, rawName, exePath, procSnapshot);
+            if (!string.IsNullOrWhiteSpace(hostRawName))
+            {
+                rawName = hostRawName;
+                if (!string.IsNullOrEmpty(hostExePath))
+                    exePath = hostExePath;
+            }
+        }
+
         string? cleanSessionName = !string.IsNullOrWhiteSpace(sessionDisplayName) && !sessionDisplayName.TrimStart().StartsWith("@")
             ? sessionDisplayName.Trim()
             : null;
@@ -764,8 +853,7 @@ public sealed class AudioService : IDisposable
             return ($"pid_{pid}", $"Aplicativo ({pid})", exePath);
         }
 
-        string appId = rawName.ToLowerInvariant();
-        string displayName = FormatAppName(rawName);
+        var (appId, displayName) = OpenAppsService.NormalizeAppIdentity(rawName);
 
         // Para apps UWP / hospedados (ex: ApplicationFrameHost / WWAHost), prefira o DisplayName legível da sessão
         if (!string.IsNullOrEmpty(cleanSessionName) &&

@@ -310,6 +310,7 @@
                             <CheckBox x:Name="ShowInTaskbarCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mostrar na barra de tarefas" Margin="0,0,0,9" Click="ShowInTaskbarCheck_Click"/>
                             <CheckBox x:Name="AnimationsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Animações suaves" Margin="0,0,0,9" Click="AnimationsCheck_Click"/>
                             <CheckBox x:Name="MediaControlsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mini controle de mídia (⏮ ⏯ ⏭)" Margin="0,0,0,9" Click="MediaControlsCheck_Click"/>
+                            <CheckBox x:Name="ShowAllOpenAppsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mostrar todos os apps abertos" Margin="0,0,0,9" Click="ShowAllOpenAppsCheck_Click"/>
                             <CheckBox x:Name="OnlyActiveCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mostrar só apps tocando agora" Margin="0,0,0,9" Click="OnlyActiveCheck_Click"/>
                             <CheckBox x:Name="RememberVolCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Lembrar volume por aplicativo" Margin="0,0,0,9" Click="RememberVolCheck_Click"/>
                             <CheckBox x:Name="AutoDuckCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Modo Call (baixar música em chamada)" Margin="0,0,0,9" Click="AutoDuckCheck_Click"/>

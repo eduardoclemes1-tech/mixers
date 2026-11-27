@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private readonly SettingsService _settings = new();
     private readonly HotkeyService _hotkey = new();
     private readonly TrayService _tray;
+    private readonly WindowEventWatcher _windowWatcher;
     private readonly OsdWindow _osd = new();
     private FluentThemePalette _theme;
 
@@ -59,6 +60,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _seenSessionInstances = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _knownAppIds = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _everHadAudioApps = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (float Volume, bool Muted)> _activeAppOverrides = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTime> _lastAppActiveUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
@@ -117,8 +119,10 @@ public partial class MainWindow : Window
         ShowInTaskbarCheck.IsChecked = _settings.Settings.ShowInTaskbar;
         AnimationsCheck.IsChecked = _settings.Settings.Animations;
         MediaControlsCheck.IsChecked = _settings.Settings.ShowMediaControls;
+        ShowAllOpenAppsCheck.IsChecked = _settings.Settings.ShowAllOpenApps;
         OnlyActiveCheck.IsChecked = _settings.Settings.OnlyActiveApps;
         RememberVolCheck.IsChecked = _settings.Settings.RememberAppVolumes;
+        SyncSavedStatesToAudioService();
         AutoDuckCheck.IsChecked = _settings.Settings.AutoDuckOnCall;
         AutostartCheck.IsChecked = WindowsThemeService.IsAutostartEnabled();
         PinCheck.IsChecked = false;
@@ -187,6 +191,7 @@ public partial class MainWindow : Window
 
         _audio.SessionsChanged += OnAudioSessionsChanged;
         _audio.DevicesChanged += OnAudioDevicesChanged;
+        _windowWatcher = new WindowEventWatcher(OnOpenWindowsChanged);
 
         _meterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(55) };
         _meterTimer.Tick += (_, _) =>
@@ -497,12 +502,37 @@ public partial class MainWindow : Window
     // ------------------------------------------------------------------
     // Notificações em tempo real (WASAPI) + Automações em segundo plano
     // ------------------------------------------------------------------
+    private void SyncSavedStatesToAudioService()
+    {
+        if (!_settings.Settings.RememberAppVolumes) return;
+        foreach (var (appId, vol) in _settings.Settings.SavedAppVolumes)
+        {
+            bool? muted = _settings.Settings.SavedAppMutes.TryGetValue(appId, out bool m) ? m : null;
+            _audio.SetDesiredAppState(appId, vol, muted);
+        }
+        foreach (var (appId, muted) in _settings.Settings.SavedAppMutes)
+        {
+            if (!_settings.Settings.SavedAppVolumes.ContainsKey(appId))
+                _audio.SetDesiredAppState(appId, null, muted);
+        }
+    }
+
     private void OnAudioSessionsChanged()
     {
         Dispatcher.BeginInvoke(() =>
         {
             _realtimeRefreshTimer.Stop();
             _realtimeRefreshTimer.Start();
+        });
+    }
+
+    private void OnOpenWindowsChanged()
+    {
+        if (!_isVisible || !_settings.Settings.ShowAllOpenApps || _settings.Settings.OnlyActiveApps) return;
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_isVisible && !_realtimeRefreshTimer.IsEnabled)
+                _realtimeRefreshTimer.Start();
         });
     }
 
@@ -516,28 +546,36 @@ public partial class MainWindow : Window
         });
     }
 
-    private void ApplySessionPolicies(List<AppSessionInfo> rawSessions)
+    private void ApplySessionPolicies(List<AppSessionInfo> rawSessions, HashSet<string>? openAppIds = null)
     {
         var currentInstances = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var currentApps = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var s in rawSessions)
         {
             currentApps.Add(s.AppId);
+            if (!s.IsSystemSounds && s.HasAudioSession)
+                _everHadAudioApps.Add(s.AppId);
             foreach (var inst in s.SessionInstanceIds)
                 currentInstances.Add(inst);
         }
 
         // Remove sessões/apps encerrados para que reabrir um app reaplique o volume salvo
         _seenSessionInstances.IntersectWith(currentInstances);
-        _knownAppIds.IntersectWith(currentApps);
-        foreach (var staleApp in _activeAppOverrides.Keys.Where(k => !currentApps.Contains(k)).ToList())
+        var aliveApps = openAppIds != null
+            ? new HashSet<string>(currentApps.Concat(openAppIds), StringComparer.OrdinalIgnoreCase)
+            : currentApps;
+        _knownAppIds.IntersectWith(aliveApps);
+        foreach (var staleApp in _activeAppOverrides.Keys.Where(k => !aliveApps.Contains(k)).ToList())
         {
             _activeAppOverrides.Remove(staleApp);
+            if (!_settings.Settings.RememberAppVolumes)
+                _audio.ClearDesiredAppState(staleApp);
         }
 
         var nowUtc = DateTime.UtcNow;
         foreach (var s in rawSessions)
         {
+            if (!s.HasAudioSession) continue;
             if (s.PeakLevel > 0.005f) _lastAppActiveUtc[s.AppId] = nowUtc;
 
             bool hasNewInstance = false;
@@ -554,23 +592,26 @@ public partial class MainWindow : Window
                     _audio.SetAppVolume(s.AppId, 0.20f);
                     s.Volume = 0.20f;
                 }
-                else if (_knownAppIds.Contains(s.AppId) &&
-                         _activeAppOverrides.TryGetValue(s.AppId, out var activeOverride))
+                else if (_activeAppOverrides.TryGetValue(s.AppId, out var activeOverride))
                 {
-                    // App já aberto criou uma nova sessão de áudio (ex: chamada no Discord ou nova aba)
+                    // App já aberto (ou com pré-volume configurado) criou uma nova sessão de áudio
                     _audio.SetAppVolume(s.AppId, activeOverride.Volume);
                     s.Volume = activeOverride.Volume;
-                    if (activeOverride.Muted)
+                    _audio.SetAppMute(s.AppId, activeOverride.Muted);
+                    s.Muted = activeOverride.Muted;
+                }
+                else if (_settings.Settings.RememberAppVolumes)
+                {
+                    if (_settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
+                    {
+                        _audio.SetAppVolume(s.AppId, savedVol);
+                        s.Volume = savedVol;
+                    }
+                    if (_settings.Settings.SavedAppMutes.TryGetValue(s.AppId, out bool savedMute) && savedMute)
                     {
                         _audio.SetAppMute(s.AppId, true);
                         s.Muted = true;
                     }
-                }
-                else if (_settings.Settings.RememberAppVolumes &&
-                         _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
-                {
-                    _audio.SetAppVolume(s.AppId, savedVol);
-                    s.Volume = savedVol;
                 }
             }
 
@@ -749,10 +790,59 @@ public partial class MainWindow : Window
         MasterPercentText.Text = masterPct.ToString();
         ApplyMasterMuteVisual(masterMuted);
 
-        var rawSessions = _audio.RefreshAppSessions();
+        var procSnap = OpenAppsService.CaptureProcessSnapshot();
+        var rawSessions = _audio.RefreshAppSessions(procSnap);
+
+        // Descobre também apps abertos que ainda não criaram sessão WASAPI (ou cuja sessão expirou em silêncio)
+        HashSet<string>? openAppIds = null;
+        if (_settings.Settings.ShowAllOpenApps && !_settings.Settings.OnlyActiveApps)
+        {
+            var trackedAudioApps = new HashSet<string>(_everHadAudioApps, StringComparer.OrdinalIgnoreCase);
+            trackedAudioApps.UnionWith(_activeAppOverrides.Keys);
+            trackedAudioApps.UnionWith(_settings.Settings.SavedAppVolumes.Keys);
+            trackedAudioApps.UnionWith(_settings.Settings.SavedAppMutes.Keys);
+            trackedAudioApps.UnionWith(_settings.Settings.PinnedApps);
+
+            var openApps = OpenAppsService.ListOpenApps(trackedAudioApps, procSnap);
+            openAppIds = new HashSet<string>(openApps.Select(a => a.AppId), StringComparer.OrdinalIgnoreCase);
+
+            var existingIds = new HashSet<string>(rawSessions.Select(s => s.AppId), StringComparer.OrdinalIgnoreCase);
+            foreach (var oa in openApps)
+            {
+                if (existingIds.Contains(oa.AppId)) continue;
+
+                float vol = 1f;
+                bool muted = false;
+                if (_activeAppOverrides.TryGetValue(oa.AppId, out var ov))
+                {
+                    vol = ov.Volume;
+                    muted = ov.Muted;
+                }
+                else if (_settings.Settings.RememberAppVolumes)
+                {
+                    if (_settings.Settings.SavedAppVolumes.TryGetValue(oa.AppId, out float savedVol))
+                        vol = Math.Clamp(savedVol, 0f, 1f);
+                    if (_settings.Settings.SavedAppMutes.TryGetValue(oa.AppId, out bool savedMute))
+                        muted = savedMute;
+                }
+
+                rawSessions.Add(new AppSessionInfo
+                {
+                    AppId = oa.AppId,
+                    DisplayName = oa.DisplayName,
+                    ExePath = oa.ExePath,
+                    Volume = vol,
+                    Muted = muted,
+                    PeakLevel = 0f,
+                    IsActive = false,
+                    HasAudioSession = false,
+                    IsSystemSounds = false
+                });
+            }
+        }
 
         // Aplica volume salvo automaticamente se um app/sessão nova apareceu + marca atividade
-        ApplySessionPolicies(rawSessions);
+        ApplySessionPolicies(rawSessions, openAppIds);
 
         // Filtra ocultos, aplica modo "só tocando agora" e ordena fixados no topo
         var nowUtc = DateTime.UtcNow;
@@ -856,6 +946,9 @@ public partial class MainWindow : Window
 
             int pct = (int)Math.Round(session.Volume * 100);
 
+            string baseTip = session.HasAudioSession
+                ? $"{session.DisplayName} (botão direito para opções)"
+                : $"{session.DisplayName} (aguardando áudio — ajuste aplica ao tocar)";
             var iconBtn = new Button
             {
                 Style = (Style)FindResource("IconButtonStyle"),
@@ -863,8 +956,8 @@ public partial class MainWindow : Window
                 Height = 34,
                 Margin = new Thickness(0, 0, 6, 0),
                 ToolTip = _settings.Settings.PinnedApps.Contains(session.AppId)
-                    ? $"📌 {session.DisplayName} (botão direito para opções)"
-                    : $"{session.DisplayName} (botão direito para opções)",
+                    ? $"📌 {baseTip}"
+                    : baseTip,
                 Content = CreateAppIconContent(session),
                 ContextMenu = CreateAppContextMenu(session)
             };
@@ -936,9 +1029,11 @@ public partial class MainWindow : Window
             if (!session.IsSystemSounds)
             {
                 _activeAppOverrides[appId] = (1f, false);
+                _audio.SetDesiredAppState(appId, 1f, false);
                 if (_settings.Settings.RememberAppVolumes)
                 {
                     _settings.Settings.SavedAppVolumes[appId] = 1f;
+                    _settings.Settings.SavedAppMutes[appId] = false;
                     ScheduleSaveSettings();
                 }
             }
@@ -1022,7 +1117,17 @@ public partial class MainWindow : Window
         foreach (var session in _sessions)
         {
             if (!_appRows.TryGetValue(session.AppId, out var row)) continue;
+            bool audioStateChanged = row.Session.HasAudioSession != session.HasAudioSession;
             row.Session = session;
+            if (audioStateChanged)
+            {
+                string baseTip = session.HasAudioSession
+                    ? $"{session.DisplayName} (botão direito para opções)"
+                    : $"{session.DisplayName} (aguardando áudio — ajuste aplica ao tocar)";
+                row.IconBtn.ToolTip = _settings.Settings.PinnedApps.Contains(session.AppId)
+                    ? $"📌 {baseTip}"
+                    : baseTip;
+            }
             int pct = (int)Math.Round(session.Volume * 100);
             if (pct != row.LastVolumePct)
             {
@@ -1192,6 +1297,7 @@ public partial class MainWindow : Window
             if (!row.Session.IsSystemSounds)
             {
                 _activeAppOverrides[appId] = (scalar, row.Session.Muted);
+                _audio.SetDesiredAppState(appId, scalar, row.Session.Muted);
                 if (_settings.Settings.RememberAppVolumes)
                 {
                     _settings.Settings.SavedAppVolumes[appId] = scalar;
@@ -1212,6 +1318,12 @@ public partial class MainWindow : Window
         if (!row.Session.IsSystemSounds)
         {
             _activeAppOverrides[appId] = (row.Session.Volume, newState);
+            _audio.SetDesiredAppState(appId, row.Session.Volume, newState);
+            if (_settings.Settings.RememberAppVolumes)
+            {
+                _settings.Settings.SavedAppMutes[appId] = newState;
+                ScheduleSaveSettings();
+            }
         }
         row.Slider.IsMuted = newState;
         row.PercentText.Foreground = newState ? MutedTextBrush : PrimaryTextBrush;
@@ -1347,6 +1459,16 @@ public partial class MainWindow : Window
         StatusText.Text = show
             ? "Ícone na barra de tarefas ativo (clique direito lá para fixar)."
             : "Ocultado da barra de tarefas.";
+    }
+
+    private void ShowAllOpenAppsCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.ShowAllOpenApps = ShowAllOpenAppsCheck.IsChecked == true;
+        _settings.SaveSettings();
+        RefreshAudioState(forceRebuild: true);
+        StatusText.Text = _settings.Settings.ShowAllOpenApps
+            ? "Mostrando todos os apps abertos."
+            : "Mostrando só apps com sessão de áudio ativa.";
     }
 
     private void OnlyActiveCheck_Click(object sender, RoutedEventArgs e)
@@ -1680,6 +1802,7 @@ public partial class MainWindow : Window
         SystemEvents.UserPreferenceChanged -= OnSystemUserPreferenceChanged;
         _audio.SessionsChanged -= OnAudioSessionsChanged;
         _audio.DevicesChanged -= OnAudioDevicesChanged;
+        _windowWatcher.Dispose();
         _realtimeRefreshTimer.Stop();
         _settingsSaveTimer.Stop();
         _bgMonitorTimer.Stop();

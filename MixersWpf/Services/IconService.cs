@@ -62,11 +62,91 @@ public static class IconService
 
         ImageSource? result =
             TryLoadSessionIconPath(sessionIconPath) ??
+            TryLoadAppxManifestIcon(exePath) ??
             TryExtractShellIcon(exePath) ??
             TryExtractAssociatedIcon(exePath);
 
         Cache[cacheKey] = result;
         return result;
+    }
+
+    private static ImageSource? TryLoadAppxManifestIcon(string? exePath)
+    {
+        if (string.IsNullOrWhiteSpace(exePath)) return null;
+        try
+        {
+            string? dir = Path.GetDirectoryName(exePath);
+            if (string.IsNullOrEmpty(dir)) return null;
+            string manifestPath = Path.Combine(dir, "AppxManifest.xml");
+            if (!File.Exists(manifestPath)) return null;
+
+            string xml = File.ReadAllText(manifestPath);
+            string[] attrNames = { "Square44x44Logo=\"", "Square150x150Logo=\"", "<Logo>" };
+            foreach (string marker in attrNames)
+            {
+                int idx = xml.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+                int start = idx + marker.Length;
+                int end = marker.StartsWith("<")
+                    ? xml.IndexOf("</Logo>", start, StringComparison.OrdinalIgnoreCase)
+                    : xml.IndexOf('"', start);
+                if (end <= start) continue;
+
+                string relPath = xml[start..end].Trim().Replace('/', '\\');
+                string? candidate = ResolveScaledAssetPath(dir, relPath);
+                if (candidate != null)
+                {
+                    var img = TryLoadSessionIconPath(candidate);
+                    if (img != null) return img;
+                }
+            }
+        }
+        catch
+        {
+        }
+        return null;
+    }
+
+    private static string? ResolveScaledAssetPath(string baseDir, string relPath)
+    {
+        string exact = Path.Combine(baseDir, relPath);
+        if (File.Exists(exact)) return exact;
+
+        try
+        {
+            string? assetDir = Path.GetDirectoryName(exact);
+            string stem = Path.GetFileNameWithoutExtension(exact);
+            string ext = Path.GetExtension(exact);
+            if (string.IsNullOrEmpty(assetDir) || !Directory.Exists(assetDir)) return null;
+
+            string[] preferredSuffixes =
+            {
+                ".targetsize-32",
+                ".targetsize-48",
+                ".targetsize-24",
+                ".scale-100",
+                ".scale-125",
+                ".scale-150",
+                ".scale-200"
+            };
+            var files = Directory.GetFiles(assetDir, $"{stem}*{ext}");
+            foreach (string suf in preferredSuffixes)
+            {
+                foreach (string f in files)
+                {
+                    if (f.Contains(suf, StringComparison.OrdinalIgnoreCase) &&
+                        !f.Contains("contrast-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return f;
+                    }
+                }
+            }
+            if (files.Length > 0) return files[0];
+        }
+        catch
+        {
+        }
+        return null;
     }
 
     private static ImageSource? TryLoadSessionIconPath(string? rawIconPath)

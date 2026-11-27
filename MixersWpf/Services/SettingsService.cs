@@ -18,8 +18,10 @@ public class UserSettings
     public bool AutoDuckOnCall { get; set; } = false;
     public bool RememberAppVolumes { get; set; } = true;
     public bool OnlyActiveApps { get; set; } = false;
+    public bool ShowAllOpenApps { get; set; } = true;
     public bool ShowInTaskbar { get; set; } = false;
     public Dictionary<string, float> SavedAppVolumes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, bool> SavedAppMutes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> PinnedApps { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> HiddenApps { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
@@ -57,6 +59,7 @@ public class SettingsService
                 if (loaded != null)
                 {
                     loaded.SavedAppVolumes ??= new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                    loaded.SavedAppMutes ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
                     loaded.PinnedApps ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     loaded.HiddenApps ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     Settings = loaded;
