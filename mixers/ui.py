@@ -11,7 +11,13 @@ from typing import Dict
 import customtkinter as ctk
 
 from mixers import __version__
-from mixers.audio_backend import AppAudioSession, AudioBackend, MicrophoneDevice
+from mixers.audio_backend import (
+    AppAudioSession,
+    AudioBackend,
+    MicTestMonitor,
+    MicrophoneDevice,
+    classify_mic_quality,
+)
 from mixers.hotkeys import GlobalHotkeyManager, normalize_hotkey_label
 from mixers.profiles import ProfileManager
 from mixers.settings import SettingsManager
@@ -92,6 +98,9 @@ class MixersApp(ctk.CTk):
         self._last_app_pct: Dict[str, int] = {}
         self._last_app_peak: Dict[str, float] = {}
         self._last_mic_pct: Dict[str, int] = {}
+        self._last_mic_peak: Dict[str, float] = {}
+        self._last_mic_quality: Dict[str, str] = {}
+        self._mic_monitor = MicTestMonitor()
 
         self._app_rows: Dict[str, dict] = {}
         self._current_sessions: Dict[str, AppAudioSession] = {}
@@ -611,19 +620,37 @@ class MixersApp(ctk.CTk):
         self.mics_card.grid(row=4, column=0, padx=14, pady=(2, 6), sticky="ew")
         self.mics_card.grid_columnconfigure(0, weight=1)
 
+        mics_header = ctk.CTkFrame(self.mics_card, fg_color="transparent")
+        mics_header.grid(row=0, column=0, padx=6, pady=(4, 2), sticky="ew")
+        mics_header.grid_columnconfigure(0, weight=1)
+
         self.mics_toggle_btn = ctk.CTkButton(
-            self.mics_card,
+            mics_header,
             text="Microfones (0)  ▾",
             anchor="w",
-            height=28,
-            corner_radius=10,
+            height=26,
+            corner_radius=8,
             font=ctk.CTkFont(size=12, weight="bold"),
             fg_color="transparent",
             hover_color="#1E2534",
             text_color=TEXT_PRIMARY,
             command=self._toggle_mics_section,
         )
-        self.mics_toggle_btn.grid(row=0, column=0, padx=6, pady=(4, 2), sticky="ew")
+        self.mics_toggle_btn.grid(row=0, column=0, sticky="ew")
+
+        self.mic_test_btn = ctk.CTkButton(
+            mics_header,
+            text="Testar",
+            width=58,
+            height=23,
+            corner_radius=7,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color="#132A23",
+            hover_color="#1E3F35",
+            text_color=MIC_ACCENT,
+            command=self._toggle_mic_test,
+        )
+        self.mic_test_btn.grid(row=0, column=1, padx=(4, 4), sticky="e")
 
         self.mics_body = ctk.CTkFrame(self.mics_card, fg_color="transparent")
         self.mics_body.grid_columnconfigure(0, weight=1)
@@ -768,6 +795,7 @@ class MixersApp(ctk.CTk):
     def hide_to_tray(self) -> None:
         if self._recording_hotkey:
             self._cancel_record_hotkey()
+        self._stop_mic_test()
         if self.tray is None and not self.demo_mode:
             self.quit_app()
             return
@@ -793,6 +821,7 @@ class MixersApp(ctk.CTk):
 
     def quit_app(self) -> None:
         self._stop_live_loops()
+        self._stop_mic_test()
         self.hotkey_manager.unregister()
         if self.tray is not None:
             self.tray.stop()
@@ -823,6 +852,7 @@ class MixersApp(ctk.CTk):
     def _update_audio_meters(self) -> None:
         try:
             master_peak, app_peaks = self.backend.get_peaks()
+            mic_peaks = self.backend.get_mic_peaks() if self._mics_expanded else {}
         except Exception:
             return
 
@@ -837,6 +867,22 @@ class MixersApp(ctk.CTk):
             if abs(peak - prev) >= self.METER_EPSILON:
                 self._last_app_peak[app_id] = peak
                 row["meter"].set(peak)
+
+        if self._mics_expanded:
+            for dev_id, row in self._mic_rows.items():
+                mic = self._current_mics.get(dev_id)
+                muted = bool(mic.muted) if mic else False
+                peak = 0.0 if muted else mic_peaks.get(dev_id, 0.0)
+                prev = self._last_mic_peak.get(dev_id, -1.0)
+                if abs(peak - prev) >= self.METER_EPSILON:
+                    self._last_mic_peak[dev_id] = peak
+                    row["meter"].set(peak)
+
+                label, color = classify_mic_quality(peak, muted=muted)
+                if self._last_mic_quality.get(dev_id) != label:
+                    self._last_mic_quality[dev_id] = label
+                    row["quality_lbl"].configure(text=label, text_color=color)
+                    row["meter"].configure(progress_color=color)
 
     def refresh_audio_state(self, force_rebuild: bool = False) -> None:
         try:
@@ -882,8 +928,37 @@ class MixersApp(ctk.CTk):
         self._set_status(f"{len(sessions)} app(s) • {len(mics)} mic(s){hk_hint}")
 
     # ------------------------------------------------------------------
-    # Microfones (Sensibilidade & Mudo)
+    # Microfones (Sensibilidade, Mudo & Qualidade/Medidor de Voz)
     # ------------------------------------------------------------------
+    def _toggle_mic_test(self) -> None:
+        if self._mic_monitor.active:
+            self._stop_mic_test()
+            self._set_status("Teste de microfone parado.")
+        else:
+            if not self._mics_expanded:
+                self._toggle_mics_section()
+            if self._mic_monitor.start():
+                self.mic_test_btn.configure(
+                    text="Parar",
+                    fg_color=MUTED_BG,
+                    hover_color=MUTED_HOVER,
+                    text_color=TEXT_PRIMARY,
+                )
+                self._set_status("Fale no microfone para ver o nível de captação.")
+            else:
+                self._set_status("Não foi possível iniciar o teste de microfone.")
+
+    def _stop_mic_test(self) -> None:
+        if self._mic_monitor.active:
+            self._mic_monitor.stop()
+        if hasattr(self, "mic_test_btn"):
+            self.mic_test_btn.configure(
+                text="Testar",
+                fg_color="#132A23",
+                hover_color="#1E3F35",
+                text_color=MIC_ACCENT,
+            )
+
     def _toggle_mics_section(self) -> None:
         self._mics_expanded = not self._mics_expanded
         self.settings.set("mics_expanded", self._mics_expanded)
@@ -894,6 +969,7 @@ class MixersApp(ctk.CTk):
         if self._mics_expanded:
             self.mics_body.grid(row=1, column=0, padx=8, pady=(0, 8), sticky="ew")
         else:
+            self._stop_mic_test()
             self.mics_body.grid_forget()
 
     def _render_microphones(self) -> None:
@@ -901,6 +977,8 @@ class MixersApp(ctk.CTk):
             child.destroy()
         self._mic_rows.clear()
         self._last_mic_pct.clear()
+        self._last_mic_peak.clear()
+        self._last_mic_quality.clear()
 
         if not self._current_mics:
             ctk.CTkLabel(
@@ -922,22 +1000,37 @@ class MixersApp(ctk.CTk):
 
             vol_pct = int(round(mic.volume * 100))
             self._last_mic_pct[mic.device_id] = vol_pct
+            init_peak = 0.0 if mic.muted else mic.peak_level
+            q_label, q_color = classify_mic_quality(init_peak, muted=mic.muted)
+            self._last_mic_peak[mic.device_id] = init_peak
+            self._last_mic_quality[mic.device_id] = q_label
 
             ctk.CTkLabel(
                 row_frame,
-                text=self._truncate(mic.name, 28),
+                text=self._truncate(mic.name, 22),
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=TEXT_PRIMARY,
                 anchor="w",
             ).grid(row=0, column=0, columnspan=2, padx=8, pady=(5, 1), sticky="w")
 
+            right_meta = ctk.CTkFrame(row_frame, fg_color="transparent")
+            right_meta.grid(row=0, column=2, padx=8, pady=(5, 1), sticky="e")
+
+            quality_lbl = ctk.CTkLabel(
+                right_meta,
+                text=q_label,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=q_color,
+            )
+            quality_lbl.pack(side="left", padx=(0, 6))
+
             pct_lbl = ctk.CTkLabel(
-                row_frame,
+                right_meta,
                 text=f"{vol_pct}%",
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=TEXT_SECONDARY if mic.muted else MIC_ACCENT,
             )
-            pct_lbl.grid(row=0, column=2, padx=8, pady=(5, 1), sticky="e")
+            pct_lbl.pack(side="left")
 
             mute_btn = ctk.CTkButton(
                 row_frame,
@@ -949,7 +1042,7 @@ class MixersApp(ctk.CTk):
                 command=lambda did=mic.device_id: self._toggle_mic_mute(did),
             )
             self._style_mic_mute_button(mute_btn, mic.muted)
-            mute_btn.grid(row=1, column=0, padx=(8, 6), pady=(2, 6))
+            mute_btn.grid(row=1, column=0, padx=(8, 6), pady=(2, 4))
 
             slider = ctk.CTkSlider(
                 row_frame,
@@ -963,12 +1056,24 @@ class MixersApp(ctk.CTk):
                 command=lambda val, did=mic.device_id: self._on_mic_slider(did, val),
             )
             slider.set(vol_pct)
-            slider.grid(row=1, column=1, columnspan=2, padx=(0, 8), pady=(2, 6), sticky="ew")
+            slider.grid(row=1, column=1, columnspan=2, padx=(0, 8), pady=(2, 4), sticky="ew")
+
+            meter = ctk.CTkProgressBar(
+                row_frame,
+                height=4,
+                corner_radius=2,
+                fg_color="#0F172A",
+                progress_color=q_color,
+            )
+            meter.set(init_peak)
+            meter.grid(row=2, column=0, columnspan=3, padx=8, pady=(0, 7), sticky="ew")
 
             self._mic_rows[mic.device_id] = {
                 "mute_btn": mute_btn,
                 "slider": slider,
                 "pct_lbl": pct_lbl,
+                "quality_lbl": quality_lbl,
+                "meter": meter,
             }
 
     def _sync_existing_mics(self) -> None:
@@ -1455,6 +1560,7 @@ class MixersApp(ctk.CTk):
 
     def _exit_for_update(self) -> None:
         self._stop_live_loops()
+        self._stop_mic_test()
         self.hotkey_manager.unregister()
         if self.tray is not None:
             self.tray.stop()

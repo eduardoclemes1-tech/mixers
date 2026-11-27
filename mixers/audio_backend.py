@@ -45,6 +45,84 @@ class MicrophoneDevice:
     name: str
     volume: float  # 0.0 a 1.0 (sensibilidade/ganho)
     muted: bool
+    peak_level: float = 0.0  # 0.0 a 1.0 (captação de voz em tempo real)
+
+
+def classify_mic_quality(peak: float, muted: bool = False) -> tuple[str, str]:
+    """Classifica o nível atual de voz no microfone retornando (rótulo, cor hex)."""
+    if muted:
+        return "Mutado", "#94A3B8"
+    if peak < 0.02:
+        return "Silêncio", "#64748B"
+    if peak < 0.14:
+        return "Baixo", "#FBBF24"
+    if peak <= 0.78:
+        return "Ideal", "#34D399"
+    return "Alto!", "#F87171"
+
+
+class MicTestMonitor:
+    """Abre um stream leve de captura via winmm somente durante o teste de microfone."""
+
+    def __init__(self) -> None:
+        self._handle = None
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def start(self) -> bool:
+        if self._active:
+            return True
+        if sys.platform != "win32":
+            self._active = True
+            return True
+        try:
+            import ctypes
+            from ctypes import Structure, byref, c_uint, c_ulong, c_ushort, c_void_p
+
+            class WAVEFORMATEX(Structure):
+                _fields_ = [
+                    ("wFormatTag", c_ushort),
+                    ("nChannels", c_ushort),
+                    ("nSamplesPerSec", c_ulong),
+                    ("nAvgBytesPerSec", c_ulong),
+                    ("nBlockAlign", c_ushort),
+                    ("wBitsPerSample", c_ushort),
+                    ("cbSize", c_ushort),
+                ]
+
+            winmm = ctypes.windll.winmm
+            wfx = WAVEFORMATEX(1, 1, 16000, 32000, 2, 16, 0)  # PCM 16kHz mono
+            h_wave_in = c_void_p()
+            # WAVE_MAPPER = 0xFFFFFFFF, CALLBACK_NULL = 0
+            res = winmm.waveInOpen(
+                byref(h_wave_in), c_uint(0xFFFFFFFF), byref(wfx), 0, 0, 0
+            )
+            if res != 0:
+                return False
+            winmm.waveInStart(h_wave_in)
+            self._handle = h_wave_in
+            self._active = True
+            return True
+        except Exception:
+            return False
+
+    def stop(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        if sys.platform == "win32" and self._handle is not None:
+            try:
+                import ctypes
+
+                winmm = ctypes.windll.winmm
+                winmm.waveInStop(self._handle)
+                winmm.waveInClose(self._handle)
+            except Exception:
+                pass
+        self._handle = None
 
 
 class AudioBackend(ABC):
@@ -77,6 +155,10 @@ class AudioBackend(ABC):
     @abstractmethod
     def get_peaks(self) -> tuple[float, Dict[str, float]]:
         """Leitura ultrarrápida dos medidores (master_peak, {app_id: peak})."""
+
+    @abstractmethod
+    def get_mic_peaks(self) -> Dict[str, float]:
+        """Leitura ultrarrápida dos medidores de voz dos microfones ({device_id: peak})."""
 
     @abstractmethod
     def list_microphones(self) -> List[MicrophoneDevice]:
@@ -136,8 +218,8 @@ class WindowsAudioBackend(AudioBackend):
         self._device_name = "Saída Padrão"
         # Cache COM: app_id -> lista de (SimpleAudioVolume, IAudioMeterInformation | None)
         self._session_cache: Dict[str, list[tuple]] = {}
-        # Cache COM: mic_device_id -> IAudioEndpointVolume
-        self._mic_cache: Dict[str, object] = {}
+        # Cache COM: mic_device_id -> (IAudioEndpointVolume, IAudioMeterInformation | None)
+        self._mic_cache: Dict[str, tuple] = {}
         self._init_master_endpoint()
 
     def _init_master_endpoint(self) -> None:
@@ -225,11 +307,23 @@ class WindowsAudioBackend(AudioBackend):
         return master_peak, app_peaks
 
     # ------------------------------------------------------------------
-    # Microfones (dispositivos de captura ativos)
+    # Microfones (dispositivos de captura ativos + medidor de voz)
     # ------------------------------------------------------------------
+    def get_mic_peaks(self) -> Dict[str, float]:
+        peaks: Dict[str, float] = {}
+        for dev_id, (_endpoint, meter) in self._mic_cache.items():
+            if meter is None:
+                peaks[dev_id] = 0.0
+                continue
+            try:
+                peaks[dev_id] = clamp_volume(meter.GetPeakValue())
+            except Exception:
+                peaks[dev_id] = 0.0
+        return peaks
+
     def list_microphones(self) -> List[MicrophoneDevice]:
         mics: List[MicrophoneDevice] = []
-        new_cache: Dict[str, object] = {}
+        new_cache: Dict[str, tuple] = {}
 
         try:
             enumerator = self._AudioUtilities.GetDeviceEnumerator()
@@ -260,13 +354,29 @@ class WindowsAudioBackend(AudioBackend):
                     endpoint = self._cast(iface, self._POINTER(self._IAudioEndpointVolume))
                     vol = clamp_volume(endpoint.GetMasterVolumeLevelScalar())
                     muted = bool(endpoint.GetMute())
-                    new_cache[dev_id] = endpoint
+
+                    mic_meter = None
+                    peak = 0.0
+                    try:
+                        m_iface = raw_dev.Activate(
+                            self._IAudioMeterInformation._iid_, self._CLSCTX_ALL, None
+                        )
+                        mic_meter = self._cast(
+                            m_iface, self._POINTER(self._IAudioMeterInformation)
+                        )
+                        if not muted:
+                            peak = clamp_volume(mic_meter.GetPeakValue())
+                    except Exception:
+                        mic_meter = None
+
+                    new_cache[dev_id] = (endpoint, mic_meter)
                     mics.append(
                         MicrophoneDevice(
                             device_id=dev_id,
                             name=name,
                             volume=vol,
                             muted=muted,
+                            peak_level=peak,
                         )
                     )
                 except Exception:
@@ -279,39 +389,41 @@ class WindowsAudioBackend(AudioBackend):
 
     def set_microphone_volume(self, device_id: str, volume: float) -> None:
         level = clamp_volume(volume)
-        endpoint = self._mic_cache.get(device_id)
-        if endpoint is None:
+        entry = self._mic_cache.get(device_id)
+        if entry is None:
             self.list_microphones()
-            endpoint = self._mic_cache.get(device_id)
-        if endpoint is None:
+            entry = self._mic_cache.get(device_id)
+        if entry is None:
             return
+        endpoint = entry[0]
         try:
             endpoint.SetMasterVolumeLevelScalar(level, None)
         except Exception:
             self.list_microphones()
-            endpoint = self._mic_cache.get(device_id)
-            if endpoint is not None:
+            entry = self._mic_cache.get(device_id)
+            if entry is not None:
                 try:
-                    endpoint.SetMasterVolumeLevelScalar(level, None)
+                    entry[0].SetMasterVolumeLevelScalar(level, None)
                 except Exception:
                     pass
 
     def set_microphone_mute(self, device_id: str, muted: bool) -> None:
         val = 1 if muted else 0
-        endpoint = self._mic_cache.get(device_id)
-        if endpoint is None:
+        entry = self._mic_cache.get(device_id)
+        if entry is None:
             self.list_microphones()
-            endpoint = self._mic_cache.get(device_id)
-        if endpoint is None:
+            entry = self._mic_cache.get(device_id)
+        if entry is None:
             return
+        endpoint = entry[0]
         try:
             endpoint.SetMute(val, None)
         except Exception:
             self.list_microphones()
-            endpoint = self._mic_cache.get(device_id)
-            if endpoint is not None:
+            entry = self._mic_cache.get(device_id)
+            if entry is not None:
                 try:
-                    endpoint.SetMute(val, None)
+                    entry[0].SetMute(val, None)
                 except Exception:
                     pass
 
@@ -477,10 +589,29 @@ class DemoAudioBackend(AudioBackend):
                 )
         return self.get_master_peak(), peaks
 
+    def get_mic_peaks(self) -> Dict[str, float]:
+        t = time.monotonic()
+        peaks: Dict[str, float] = {}
+        for idx, (dev_id, m) in enumerate(self._mics.items()):
+            if m.muted:
+                peaks[dev_id] = 0.0
+            else:
+                peaks[dev_id] = clamp_volume(
+                    (0.25 + 0.55 * abs(math.sin(t * (3.2 + idx)))) * m.volume
+                )
+        return peaks
+
     def list_microphones(self) -> List[MicrophoneDevice]:
+        peaks = self.get_mic_peaks()
         return sorted(
             [
-                MicrophoneDevice(m.device_id, m.name, m.volume, m.muted)
+                MicrophoneDevice(
+                    m.device_id,
+                    m.name,
+                    m.volume,
+                    m.muted,
+                    peak_level=peaks.get(m.device_id, 0.0),
+                )
                 for m in self._mics.values()
             ],
             key=lambda m: m.name.lower(),

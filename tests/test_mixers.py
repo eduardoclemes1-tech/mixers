@@ -4,7 +4,12 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from mixers.audio_backend import DemoAudioBackend, clamp_volume, format_app_name
+from mixers.audio_backend import (
+    DemoAudioBackend,
+    clamp_volume,
+    classify_mic_quality,
+    format_app_name,
+)
 from mixers.hotkeys import MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, normalize_hotkey_label, parse_hotkey
 from mixers.profiles import ProfileManager
 from mixers.settings import SettingsManager
@@ -22,6 +27,13 @@ class TestAudioHelpers(unittest.TestCase):
         self.assertEqual(format_app_name("chrome.exe"), "Chrome")
         self.assertEqual(format_app_name("Spotify.EXE"), "Spotify")
         self.assertEqual(format_app_name("discord"), "Discord")
+
+    def test_classify_mic_quality(self) -> None:
+        self.assertEqual(classify_mic_quality(0.5, muted=True)[0], "Mutado")
+        self.assertEqual(classify_mic_quality(0.0)[0], "Silêncio")
+        self.assertEqual(classify_mic_quality(0.08)[0], "Baixo")
+        self.assertEqual(classify_mic_quality(0.45)[0], "Ideal")
+        self.assertEqual(classify_mic_quality(0.92)[0], "Alto!")
 
 
 class TestDemoBackendAndProfiles(unittest.TestCase):
