@@ -47,31 +47,39 @@
                             <ColumnDefinition Width="38"/>
                         </Grid.ColumnDefinitions>
 
-                        <TextBlock x:Name="DeviceNameText"
-                                   Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
-                                   Text="Alto-falantes"
-                                   Foreground="#F4F4F8"
-                                   FontFamily="Segoe UI"
-                                   FontSize="12.5"
-                                   TextTrimming="CharacterEllipsis"
-                                   VerticalAlignment="Center"
-                                   Margin="2,0,8,6"/>
+                        <Grid Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
 
-                        <StackPanel Grid.Row="0" Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,-2,-2,4">
-                            <Button x:Name="SettingsBtn"
-                                    Style="{StaticResource IconButtonStyle}"
-                                    Width="24" Height="24"
-                                    ToolTip="Ajustes"
-                                    Click="SettingsBtn_Click">
-                                <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#D4D0E6"/>
-                            </Button>
-                            <Button Style="{StaticResource IconButtonStyle}"
-                                    Width="24" Height="24"
-                                    ToolTip="Ocultar"
-                                    Click="HideBtn_Click">
-                                <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#D4D0E6"/>
-                            </Button>
-                        </StackPanel>
+                            <TextBlock x:Name="DeviceNameText"
+                                       Grid.Column="0"
+                                       Text="Alto-falantes"
+                                       Foreground="#F4F4F8"
+                                       FontFamily="Segoe UI"
+                                       FontSize="12.5"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center"
+                                       Margin="2,0,8,0"/>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <Button x:Name="SettingsBtn"
+                                        Style="{StaticResource IconButtonStyle}"
+                                        Width="24" Height="24"
+                                        Margin="0,0,2,0"
+                                        ToolTip="Ajustes"
+                                        Click="SettingsBtn_Click">
+                                    <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="12" Foreground="#D4D0E6"/>
+                                </Button>
+                                <Button Style="{StaticResource IconButtonStyle}"
+                                        Width="24" Height="24"
+                                        ToolTip="Ocultar"
+                                        Click="HideBtn_Click">
+                                    <TextBlock Text="&#xE70D;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#D4D0E6"/>
+                                </Button>
+                            </StackPanel>
+                        </Grid>
 
                         <Button x:Name="MasterMuteBtn"
                                 Grid.Row="1" Grid.Column="0"
