@@ -9,7 +9,8 @@ from typing import Any
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
-    "alpha": 0.93,
+    "alpha": 0.86,
+    "animations": True,
     "hotkey": "Ctrl+Alt+M",
     "mics_expanded": True,
 }

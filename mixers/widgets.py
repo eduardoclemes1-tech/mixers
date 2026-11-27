@@ -104,6 +104,10 @@ class EarTrumpetSlider(tk.Canvas):
         value: int = 100,
         muted: bool = False,
         accent_color: str = ACCENT_PURPLE,
+        accent_hover: str = ACCENT_PURPLE_HOVER,
+        track_unfilled: str = TRACK_UNFILLED,
+        track_muted: str = TRACK_MUTED,
+        thumb_muted: str = THUMB_MUTED,
         peak_color: str = PEAK_WHITE,
         on_change: Callable[[int], None] | None = None,
         height: int = 28,
@@ -120,6 +124,10 @@ class EarTrumpetSlider(tk.Canvas):
         self._muted = bool(muted)
         self._peak = 0.0
         self._accent = accent_color
+        self._accent_hover = accent_hover
+        self._track_unfilled = track_unfilled
+        self._track_muted = track_muted
+        self._thumb_muted = thumb_muted
         self._peak_color = peak_color
         self._on_change = on_change
         self._hovered = False
@@ -221,14 +229,14 @@ class EarTrumpetSlider(tk.Canvas):
         # 1. Trilha base fina (2px)
         self.create_line(
             x0, cy, x1, cy,
-            fill=TRACK_MUTED if self._muted else TRACK_UNFILLED,
+            fill=self._track_muted if self._muted else self._track_unfilled,
             width=2,
             capstyle=tk.ROUND,
         )
 
         # 2. Trilha preenchida (2px)
         if ratio > 0:
-            fill_col = THUMB_MUTED if self._muted else self._accent
+            fill_col = self._thumb_muted if self._muted else self._accent
             self.create_line(
                 x0, cy, kx, cy,
                 fill=fill_col,
@@ -251,9 +259,9 @@ class EarTrumpetSlider(tk.Canvas):
         pill_w = 5 if (self._hovered or self._dragging) else 4
         pill_h = 17 if (self._hovered or self._dragging) else 15
         thumb_col = (
-            THUMB_MUTED
+            self._thumb_muted
             if self._muted
-            else (ACCENT_PURPLE_HOVER if (self._hovered or self._dragging) else self._accent)
+            else (self._accent_hover if (self._hovered or self._dragging) else self._accent)
         )
         self._draw_pill(kx, cy, pill_w, pill_h, thumb_col)
 

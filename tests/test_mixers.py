@@ -14,7 +14,11 @@ from mixers.hotkeys import MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, normalize_hotkey_
 from mixers.profiles import ProfileManager
 from mixers.settings import SettingsManager
 from mixers.updater import is_newer_version, parse_version, select_exe_asset_url
-from mixers.windows_integration import compute_bottom_right_position, get_work_area
+from mixers.windows_integration import (
+    compute_bottom_right_position,
+    derive_theme_from_accent,
+    get_work_area,
+)
 
 
 class TestAudioHelpers(unittest.TestCase):
@@ -139,6 +143,12 @@ class TestHotkeysAndSettings(unittest.TestCase):
             s2 = SettingsManager(path=cfg)
             self.assertEqual(s2.get("hotkey"), "Ctrl+Shift+V")
             self.assertAlmostEqual(s2.get("alpha"), 0.85)
+
+    def test_derive_theme_from_windows_accent(self) -> None:
+        theme = derive_theme_from_accent((0, 120, 215))  # Azul Windows
+        self.assertTrue(theme["accent"].startswith("#"))
+        self.assertTrue(theme["header_band"].startswith("#"))
+        self.assertNotEqual(theme["header_band"], theme["list_band"])
 
 
 if __name__ == "__main__":
