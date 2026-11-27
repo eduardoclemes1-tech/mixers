@@ -128,21 +128,30 @@
                                    HorizontalAlignment="Right"
                                    VerticalAlignment="Center"/>
 
-                        <!-- Mini Controle de Mídia discreto (⏮ ⏯ ⏭) -->
+                        <!-- Mini Controle de Mídia discreto (Artista — Música + ⏮ ⏯ ⏭) -->
                         <StackPanel x:Name="MediaBar"
                                     Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3"
-                                    Orientation="Horizontal"
-                                    HorizontalAlignment="Center"
-                                    Margin="0,4,0,-2">
-                            <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Faixa anterior" Click="MediaPrevBtn_Click">
-                                <TextBlock Text="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
-                            </Button>
-                            <Button Style="{StaticResource IconButtonStyle}" Width="34" Height="22" Margin="4,0" ToolTip="Tocar / Pausar" Click="MediaPlayPauseBtn_Click">
-                                <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#F4F4F8"/>
-                            </Button>
-                            <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Próxima faixa" Click="MediaNextBtn_Click">
-                                <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
-                            </Button>
+                                    Margin="0,5,0,-2">
+                            <TextBlock x:Name="MediaTitleText"
+                                       Text=""
+                                       Visibility="Collapsed"
+                                       Foreground="#CCC6E0"
+                                       FontFamily="Segoe UI"
+                                       FontSize="10.5"
+                                       TextAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="6,0,6,2"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Faixa anterior" Click="MediaPrevBtn_Click">
+                                    <TextBlock Text="&#xE892;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
+                                </Button>
+                                <Button Style="{StaticResource IconButtonStyle}" Width="34" Height="22" Margin="4,0" ToolTip="Tocar / Pausar" Click="MediaPlayPauseBtn_Click">
+                                    <TextBlock Text="&#xE768;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#F4F4F8"/>
+                                </Button>
+                                <Button Style="{StaticResource IconButtonStyle}" Width="30" Height="22" Margin="4,0" ToolTip="Próxima faixa" Click="MediaNextBtn_Click">
+                                    <TextBlock Text="&#xE893;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#DCD8EE"/>
+                                </Button>
+                            </StackPanel>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -297,8 +306,10 @@
 
                             <!-- Switches -->
                             <CheckBox x:Name="TransparentGlassCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Fundo transparente (vidro Acrylic)" Margin="0,0,0,9" Click="TransparentGlassCheck_Click"/>
+                            <CheckBox x:Name="ShowInTaskbarCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mostrar na barra de tarefas" Margin="0,0,0,9" Click="ShowInTaskbarCheck_Click"/>
                             <CheckBox x:Name="AnimationsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Animações suaves" Margin="0,0,0,9" Click="AnimationsCheck_Click"/>
                             <CheckBox x:Name="MediaControlsCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mini controle de mídia (⏮ ⏯ ⏭)" Margin="0,0,0,9" Click="MediaControlsCheck_Click"/>
+                            <CheckBox x:Name="OnlyActiveCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Mostrar só apps tocando agora" Margin="0,0,0,9" Click="OnlyActiveCheck_Click"/>
                             <CheckBox x:Name="RememberVolCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Lembrar volume por aplicativo" Margin="0,0,0,9" Click="RememberVolCheck_Click"/>
                             <CheckBox x:Name="AutoDuckCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Modo Call (baixar música em chamada)" Margin="0,0,0,9" Click="AutoDuckCheck_Click"/>
                             <CheckBox x:Name="AutostartCheck" Style="{StaticResource ModernCheckBoxStyle}" Content="Iniciar com o Windows" Margin="0,0,0,9" Click="AutostartCheck_Click"/>
@@ -319,7 +330,7 @@
 
                             <!-- Atalho 2: Mutar Microfone -->
                             <TextBlock Text="Atalho: Mutar / desmutar microfone" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,4"/>
-                            <Grid Margin="0,0,0,6">
+                            <Grid Margin="0,0,0,10">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
@@ -329,6 +340,27 @@
                                     <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
                                 </Button>
                             </Grid>
+
+                            <!-- Atalho 3: Alternar saída Fone <-> Caixa -->
+                            <TextBlock Text="Atalho: Alternar saída de áudio" Foreground="#A8A4B8" FontFamily="Segoe UI" FontSize="11" Margin="0,0,0,4"/>
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="CycleOutputHotkeyBtn" Grid.Column="0" Content="Clique para definir" Style="{StaticResource PillButtonStyle}" Height="28" FontSize="11.5" FontWeight="SemiBold" Click="CycleOutputHotkeyBtn_Click"/>
+                                <Button Grid.Column="1" Style="{StaticResource IconButtonStyle}" Width="28" Height="28" Margin="6,0,0,0" ToolTip="Desativar" Click="ClearCycleOutputHotkeyBtn_Click">
+                                    <TextBlock Text="&#xE711;" FontFamily="Segoe MDL2 Assets" FontSize="11" Foreground="#A8A4B8"/>
+                                </Button>
+                            </Grid>
+
+                            <Button x:Name="RestoreHiddenBtn"
+                                    Content="Restaurar apps ocultos (0)"
+                                    Visibility="Collapsed"
+                                    Style="{StaticResource PillButtonStyle}"
+                                    Height="26"
+                                    Margin="0,2,0,6"
+                                    Click="RestoreHiddenBtn_Click"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Border>

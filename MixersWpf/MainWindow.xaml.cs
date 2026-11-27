@@ -46,6 +46,7 @@ public partial class MainWindow : Window
     private readonly SettingsService _settings = new();
     private readonly HotkeyService _hotkey = new();
     private readonly TrayService _tray;
+    private readonly OsdWindow _osd = new();
     private FluentThemePalette _theme;
 
     private readonly DispatcherTimer _sessionTimer;
@@ -56,6 +57,7 @@ public partial class MainWindow : Window
     private readonly Dictionary<string, AppRowWidgets> _appRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, MicRowWidgets> _micRows = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _seenApps = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _lastAppActiveUtc = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, float> _duckedOriginalVolumes = new(StringComparer.OrdinalIgnoreCase);
     private DateTime _lastCallSoundUtc = DateTime.MinValue;
 
@@ -97,6 +99,9 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        Icon = TrayService.CreateWindowIconSource();
+        ShowInTaskbar = _settings.Settings.ShowInTaskbar;
+
         _theme = WindowsThemeService.BuildPalette(
             WindowsThemeService.GetWindowsAccentColor(),
             _settings.Settings.TransparentGlass);
@@ -105,13 +110,16 @@ public partial class MainWindow : Window
         VersionBadgeText.Text = $"v{App.AppVersion}";
         StatusText.Text = $"Mixers v{App.AppVersion}";
         TransparentGlassCheck.IsChecked = _settings.Settings.TransparentGlass;
+        ShowInTaskbarCheck.IsChecked = _settings.Settings.ShowInTaskbar;
         AnimationsCheck.IsChecked = _settings.Settings.Animations;
         MediaControlsCheck.IsChecked = _settings.Settings.ShowMediaControls;
+        OnlyActiveCheck.IsChecked = _settings.Settings.OnlyActiveApps;
         RememberVolCheck.IsChecked = _settings.Settings.RememberAppVolumes;
         AutoDuckCheck.IsChecked = _settings.Settings.AutoDuckOnCall;
         AutostartCheck.IsChecked = WindowsThemeService.IsAutostartEnabled();
         PinCheck.IsChecked = false;
         MediaBar.Visibility = _settings.Settings.ShowMediaControls ? Visibility.Visible : Visibility.Collapsed;
+        UpdateRestoreHiddenButton();
 
         int savedAlphaPct = (int)Math.Clamp(Math.Round(_settings.Settings.Alpha * 100), 65, 100);
         OpacitySlider.Value = savedAlphaPct;
@@ -120,19 +128,22 @@ public partial class MainWindow : Window
 
         MasterSlider.ValueChanged += OnMasterSliderChanged;
 
-        // Atalhos globais (Abrir/Ocultar + Mutar Microfone)
+        // Atalhos globais (Abrir/Ocultar + Mutar Microfone + Alternar Saída)
         _hotkey.Attach(this);
         _hotkey.Register(HotkeyService.OpenHotkeyId, _settings.Settings.Hotkey, () => Dispatcher.Invoke(ToggleFlyout));
         _hotkey.Register(HotkeyService.MicMuteHotkeyId, _settings.Settings.MicMuteHotkey, () => Dispatcher.Invoke(ToggleGlobalMicMute));
+        _hotkey.Register(HotkeyService.CycleOutputHotkeyId, _settings.Settings.CycleOutputHotkey, () => Dispatcher.Invoke(CycleOutputDevice));
         RefreshHotkeyButtons();
 
         _tray = new TrayService(
             onToggle: () => Dispatcher.Invoke(ToggleFlyout),
             onToggleMicMute: () => Dispatcher.Invoke(ToggleGlobalMicMute),
+            onCycleOutput: () => Dispatcher.Invoke(CycleOutputDevice),
             onToggleAutostart: () => Dispatcher.Invoke(ToggleAutostartFromTray),
             isAutostart: WindowsThemeService.IsAutostartEnabled,
             onCheckUpdates: () => Dispatcher.Invoke(() => _ = CheckUpdatesAsync(manual: true)),
-            onQuit: () => Dispatcher.Invoke(QuitApplication));
+            onQuit: () => Dispatcher.Invoke(QuitApplication),
+            onTrayWheelDelta: step => Dispatcher.Invoke(() => OnTrayWheelVolume(step)));
 
         _sessionTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2.5) };
         _sessionTimer.Tick += (_, _) =>
@@ -207,6 +218,7 @@ public partial class MainWindow : Window
         ApplySliderPalette(OpacitySlider);
         foreach (var row in _appRows.Values) ApplySliderPalette(row.Slider);
         foreach (var row in _micRows.Values) ApplySliderPalette(row.Slider);
+        _osd.ApplyTheme(_theme);
     }
 
     private void ApplySliderPalette(VolumeSliderControl slider)
@@ -530,7 +542,55 @@ public partial class MainWindow : Window
     {
         bool nowMuted = _audio.ToggleAllMicsMute();
         _tray.UpdateIconState(_audio.GetMasterMute(), nowMuted);
+        _osd.ShowMessage(nowMuted ? "\uF781" : "\uE720", nowMuted ? "Microfone mutado" : "Microfone ativo");
         if (_isVisible) RefreshAudioState(forceRebuild: false);
+    }
+
+    private void CycleOutputDevice()
+    {
+        var devices = _audio.ListOutputDevices();
+        if (devices.Count < 2)
+        {
+            _osd.ShowMessage("\uE767", devices.Count == 1 ? devices[0].Name : "Sem saída de áudio");
+            return;
+        }
+        int curIdx = devices.FindIndex(d => d.IsDefault);
+        var next = devices[(curIdx + 1) % devices.Count];
+        if (_audio.SetDefaultOutputDevice(next.DeviceId))
+        {
+            _osd.ShowMessage("\uE7F6", $"Saída: {next.Name}");
+            if (_isVisible) RefreshAudioState(forceRebuild: true);
+        }
+    }
+
+    private void OnTrayWheelVolume(int deltaPct)
+    {
+        int cur = (int)Math.Round(_audio.GetMasterVolume() * 100);
+        int next = Math.Clamp(cur + deltaPct, 0, 100);
+        _audio.SetMasterVolume(next / 100f);
+        if (next > 0 && _audio.GetMasterMute()) _audio.SetMasterMute(false);
+        _osd.ShowMessage(next == 0 ? "\uE74F" : "\uE767", $"Volume: {next}%");
+        if (_isVisible)
+        {
+            MasterSlider.Value = next;
+            MasterPercentText.Text = next.ToString();
+            ApplyMasterMuteVisual(false);
+        }
+    }
+
+    private async Task RefreshMediaTitleAsync()
+    {
+        if (!_settings.Settings.ShowMediaControls || !_isVisible) return;
+        string title = await MediaInfoService.GetCurrentMediaTitleAsync();
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            MediaTitleText.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            MediaTitleText.Text = title;
+            MediaTitleText.Visibility = Visibility.Visible;
+        }
     }
 
     // ------------------------------------------------------------------
@@ -583,14 +643,14 @@ public partial class MainWindow : Window
         MasterPercentText.Text = masterPct.ToString();
         ApplyMasterMuteVisual(masterMuted);
 
-        var newSessions = _audio.RefreshAppSessions();
+        var rawSessions = _audio.RefreshAppSessions();
 
-        // Aplica volume salvo automaticamente se um app novo apareceu
-        if (_settings.Settings.RememberAppVolumes)
+        // Aplica volume salvo automaticamente se um app novo apareceu + marca atividade
+        foreach (var s in rawSessions)
         {
-            foreach (var s in newSessions)
+            if (s.PeakLevel > 0.005f) _lastAppActiveUtc[s.AppId] = DateTime.UtcNow;
+            if (!s.IsSystemSounds && _settings.Settings.RememberAppVolumes)
             {
-                if (s.IsSystemSounds) continue;
                 if (_seenApps.Add(s.AppId) &&
                     _settings.Settings.SavedAppVolumes.TryGetValue(s.AppId, out float savedVol))
                 {
@@ -600,6 +660,20 @@ public partial class MainWindow : Window
             }
         }
 
+        // Filtra ocultos, aplica modo "só tocando agora" e ordena fixados no topo
+        var nowUtc = DateTime.UtcNow;
+        var newSessions = rawSessions
+            .Where(s => !_settings.Settings.HiddenApps.Contains(s.AppId))
+            .Where(s =>
+                !_settings.Settings.OnlyActiveApps ||
+                _settings.Settings.PinnedApps.Contains(s.AppId) ||
+                s.PeakLevel > 0.005f ||
+                (_lastAppActiveUtc.TryGetValue(s.AppId, out var t) && (nowUtc - t).TotalSeconds < 6.0))
+            .OrderByDescending(s => _settings.Settings.PinnedApps.Contains(s.AppId))
+            .ThenBy(s => !s.IsSystemSounds)
+            .ThenBy(s => s.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         bool appsChanged = forceRebuild ||
             newSessions.Count != _sessions.Count ||
             !newSessions.Select(s => s.AppId).SequenceEqual(_sessions.Select(s => s.AppId), StringComparer.OrdinalIgnoreCase);
@@ -607,6 +681,11 @@ public partial class MainWindow : Window
 
         if (appsChanged) BuildAppRows();
         else SyncAppRows();
+
+        if (_settings.Settings.ShowMediaControls && _isVisible)
+        {
+            _ = RefreshMediaTitleAsync();
+        }
 
         var newMics = _audio.RefreshMicrophones();
         bool micsChanged = forceRebuild ||
@@ -686,8 +765,11 @@ public partial class MainWindow : Window
                 Width = 34,
                 Height = 34,
                 Margin = new Thickness(0, 0, 6, 0),
-                ToolTip = session.DisplayName,
-                Content = CreateAppIconContent(session)
+                ToolTip = _settings.Settings.PinnedApps.Contains(session.AppId)
+                    ? $"📌 {session.DisplayName} (botão direito para opções)"
+                    : $"{session.DisplayName} (botão direito para opções)",
+                Content = CreateAppIconContent(session),
+                ContextMenu = CreateAppContextMenu(session)
             };
             iconBtn.Click += (_, _) => ToggleAppMute(session.AppId);
             Grid.SetColumn(iconBtn, 0);
@@ -729,6 +811,59 @@ public partial class MainWindow : Window
                 LastMuted = session.Muted,
                 LastVolumePct = pct
             };
+        }
+    }
+
+    private ContextMenu CreateAppContextMenu(AppSessionInfo session)
+    {
+        string appId = session.AppId;
+        bool isPinned = _settings.Settings.PinnedApps.Contains(appId);
+
+        var menu = new ContextMenu();
+
+        var pinItem = new MenuItem { Header = isPinned ? "Desafixar do topo" : "Fixar no topo" };
+        pinItem.Click += (_, _) =>
+        {
+            if (!_settings.Settings.PinnedApps.Remove(appId))
+                _settings.Settings.PinnedApps.Add(appId);
+            _settings.SaveSettings();
+            RefreshAudioState(forceRebuild: true);
+        };
+        menu.Items.Add(pinItem);
+
+        var resetItem = new MenuItem { Header = "Restaurar 100%" };
+        resetItem.Click += (_, _) =>
+        {
+            _audio.SetAppMute(appId, false);
+            _audio.SetAppVolume(appId, 1f);
+            RefreshAudioState(forceRebuild: false);
+        };
+        menu.Items.Add(resetItem);
+
+        var hideItem = new MenuItem { Header = "Ocultar aplicativo" };
+        hideItem.Click += (_, _) =>
+        {
+            _settings.Settings.HiddenApps.Add(appId);
+            _settings.SaveSettings();
+            UpdateRestoreHiddenButton();
+            RefreshAudioState(forceRebuild: true);
+        };
+        menu.Items.Add(hideItem);
+
+        return menu;
+    }
+
+    private void UpdateRestoreHiddenButton()
+    {
+        int count = _settings.Settings.HiddenApps.Count;
+        if (count > 0)
+        {
+            RestoreHiddenBtn.Content = $"Restaurar apps ocultos ({count})";
+            RestoreHiddenBtn.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            RestoreHiddenBtn.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -1089,6 +1224,36 @@ public partial class MainWindow : Window
         StatusText.Text = glass ? "Vidro transparente ativado." : "Fundo mais opaco e visível.";
     }
 
+    private void ShowInTaskbarCheck_Click(object sender, RoutedEventArgs e)
+    {
+        bool show = ShowInTaskbarCheck.IsChecked == true;
+        _settings.Settings.ShowInTaskbar = show;
+        ShowInTaskbar = show;
+        _settings.SaveSettings();
+        StatusText.Text = show
+            ? "Ícone na barra de tarefas ativo (clique direito lá para fixar)."
+            : "Ocultado da barra de tarefas.";
+    }
+
+    private void OnlyActiveCheck_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.OnlyActiveApps = OnlyActiveCheck.IsChecked == true;
+        _settings.SaveSettings();
+        RefreshAudioState(forceRebuild: true);
+        StatusText.Text = _settings.Settings.OnlyActiveApps
+            ? "Mostrando só apps tocando agora."
+            : "Mostrando todos os apps.";
+    }
+
+    private void RestoreHiddenBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Settings.HiddenApps.Clear();
+        _settings.SaveSettings();
+        UpdateRestoreHiddenButton();
+        RefreshAudioState(forceRebuild: true);
+        StatusText.Text = "Apps ocultos restaurados.";
+    }
+
     private void AnimationsCheck_Click(object sender, RoutedEventArgs e)
     {
         _settings.Settings.Animations = AnimationsCheck.IsChecked == true;
@@ -1148,6 +1313,21 @@ public partial class MainWindow : Window
 
     private void OpenHotkeyBtn_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey(HotkeyService.OpenHotkeyId);
     private void MicHotkeyBtn_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey(HotkeyService.MicMuteHotkeyId);
+    private void CycleOutputHotkeyBtn_Click(object sender, RoutedEventArgs e) => StartRecordingHotkey(HotkeyService.CycleOutputHotkeyId);
+
+    private Button GetHotkeyButton(int id) => id switch
+    {
+        HotkeyService.OpenHotkeyId => OpenHotkeyBtn,
+        HotkeyService.MicMuteHotkeyId => MicHotkeyBtn,
+        _ => CycleOutputHotkeyBtn
+    };
+
+    private Action GetHotkeyCallback(int id) => id switch
+    {
+        HotkeyService.OpenHotkeyId => () => Dispatcher.Invoke(ToggleFlyout),
+        HotkeyService.MicMuteHotkeyId => () => Dispatcher.Invoke(ToggleGlobalMicMute),
+        _ => () => Dispatcher.Invoke(CycleOutputDevice)
+    };
 
     private void StartRecordingHotkey(int hotkeyId)
     {
@@ -1160,7 +1340,7 @@ public partial class MainWindow : Window
 
         _hotkey.Unregister(hotkeyId);
         _recordingHotkeyId = hotkeyId;
-        var btn = hotkeyId == HotkeyService.OpenHotkeyId ? OpenHotkeyBtn : MicHotkeyBtn;
+        var btn = GetHotkeyButton(hotkeyId);
         btn.Content = "Pressione a tecla...";
         btn.Background = CreateFrozenBrush(_theme.Accent);
         StatusText.Text = "Pressione 1 botão especial ou combinação (Esc cancela).";
@@ -1172,10 +1352,14 @@ public partial class MainWindow : Window
         int id = _recordingHotkeyId;
         _recordingHotkeyId = 0;
 
-        if (id == HotkeyService.OpenHotkeyId && !string.IsNullOrEmpty(_settings.Settings.Hotkey))
-            _hotkey.Register(id, _settings.Settings.Hotkey, () => Dispatcher.Invoke(ToggleFlyout));
-        else if (id == HotkeyService.MicMuteHotkeyId && !string.IsNullOrEmpty(_settings.Settings.MicMuteHotkey))
-            _hotkey.Register(id, _settings.Settings.MicMuteHotkey, () => Dispatcher.Invoke(ToggleGlobalMicMute));
+        string prev = id switch
+        {
+            HotkeyService.OpenHotkeyId => _settings.Settings.Hotkey,
+            HotkeyService.MicMuteHotkeyId => _settings.Settings.MicMuteHotkey,
+            _ => _settings.Settings.CycleOutputHotkey
+        };
+        if (!string.IsNullOrEmpty(prev))
+            _hotkey.Register(id, prev, GetHotkeyCallback(id));
 
         RefreshHotkeyButtons();
     }
@@ -1198,6 +1382,16 @@ public partial class MainWindow : Window
         _settings.SaveSettings();
         RefreshHotkeyButtons();
         StatusText.Text = "Atalho de microfone desativado.";
+    }
+
+    private void ClearCycleOutputHotkeyBtn_Click(object sender, RoutedEventArgs e)
+    {
+        _recordingHotkeyId = 0;
+        _hotkey.Unregister(HotkeyService.CycleOutputHotkeyId);
+        _settings.Settings.CycleOutputHotkey = "";
+        _settings.SaveSettings();
+        RefreshHotkeyButtons();
+        StatusText.Text = "Atalho de troca de saída desativado.";
     }
 
     private void OnWindowKeyDown(object sender, KeyEventArgs e)
@@ -1247,22 +1441,26 @@ public partial class MainWindow : Window
 
         int id = _recordingHotkeyId;
         _recordingHotkeyId = 0;
-        Action callback = id == HotkeyService.OpenHotkeyId
-            ? () => Dispatcher.Invoke(ToggleFlyout)
-            : () => Dispatcher.Invoke(ToggleGlobalMicMute);
+        Action callback = GetHotkeyCallback(id);
 
         var (ok, msg) = _hotkey.Register(id, combo, callback);
         if (ok)
         {
             string saved = _hotkey.GetHotkeyLabel(id);
             if (id == HotkeyService.OpenHotkeyId) _settings.Settings.Hotkey = saved;
-            else _settings.Settings.MicMuteHotkey = saved;
+            else if (id == HotkeyService.MicMuteHotkeyId) _settings.Settings.MicMuteHotkey = saved;
+            else _settings.Settings.CycleOutputHotkey = saved;
             _settings.SaveSettings();
             StatusText.Text = $"✓ Salvo: {saved}";
         }
         else
         {
-            string prev = id == HotkeyService.OpenHotkeyId ? _settings.Settings.Hotkey : _settings.Settings.MicMuteHotkey;
+            string prev = id switch
+            {
+                HotkeyService.OpenHotkeyId => _settings.Settings.Hotkey,
+                HotkeyService.MicMuteHotkeyId => _settings.Settings.MicMuteHotkey,
+                _ => _settings.Settings.CycleOutputHotkey
+            };
             if (!string.IsNullOrEmpty(prev)) _hotkey.Register(id, prev, callback);
             StatusText.Text = msg;
         }
@@ -1278,6 +1476,10 @@ public partial class MainWindow : Window
         string micLbl = _hotkey.GetHotkeyLabel(HotkeyService.MicMuteHotkeyId);
         MicHotkeyBtn.Background = SubtleButtonBrush;
         MicHotkeyBtn.Content = string.IsNullOrEmpty(micLbl) ? "Clique para definir" : micLbl;
+
+        string cycleLbl = _hotkey.GetHotkeyLabel(HotkeyService.CycleOutputHotkeyId);
+        CycleOutputHotkeyBtn.Background = SubtleButtonBrush;
+        CycleOutputHotkeyBtn.Content = string.IsNullOrEmpty(cycleLbl) ? "Clique para definir" : cycleLbl;
     }
 
     // ------------------------------------------------------------------
@@ -1369,6 +1571,7 @@ public partial class MainWindow : Window
         _hotkey.Dispose();
         _tray.Dispose();
         _audio.Dispose();
+        try { _osd.Close(); } catch { }
         Application.Current.Shutdown();
     }
 }

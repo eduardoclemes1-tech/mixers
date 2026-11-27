@@ -9,8 +9,9 @@ namespace Mixers.Services;
 
 public sealed class HotkeyService : IDisposable
 {
-    public const int OpenHotkeyId = 0x4D49;     // "MI"
-    public const int MicMuteHotkeyId = 0x4D4D;  // "MM"
+    public const int OpenHotkeyId = 0x4D49;        // "MI"
+    public const int MicMuteHotkeyId = 0x4D4D;     // "MM"
+    public const int CycleOutputHotkeyId = 0x4D4F; // "MO"
 
     private const int WmHotkey = 0x0312;
     private const uint ModAlt = 0x0001;

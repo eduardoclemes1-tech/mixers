@@ -12,11 +12,16 @@ public class UserSettings
     public bool Animations { get; set; } = true;
     public string Hotkey { get; set; } = "Ctrl+Alt+M";
     public string MicMuteHotkey { get; set; } = "";
+    public string CycleOutputHotkey { get; set; } = "";
     public bool MicsExpanded { get; set; } = true;
     public bool ShowMediaControls { get; set; } = true;
     public bool AutoDuckOnCall { get; set; } = false;
     public bool RememberAppVolumes { get; set; } = true;
+    public bool OnlyActiveApps { get; set; } = false;
+    public bool ShowInTaskbar { get; set; } = false;
     public Dictionary<string, float> SavedAppVolumes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> PinnedApps { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> HiddenApps { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 public class SettingsService
@@ -52,6 +57,8 @@ public class SettingsService
                 if (loaded != null)
                 {
                     loaded.SavedAppVolumes ??= new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+                    loaded.PinnedApps ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    loaded.HiddenApps ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     Settings = loaded;
                 }
             }
