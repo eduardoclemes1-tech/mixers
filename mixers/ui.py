@@ -1,4 +1,4 @@
-"""Interface fiel ao EarTrumpet / Windows 11 com cor do sistema, animações leves e toggle sequinho."""
+"""Interface fiel ao EarTrumpet / Windows 11: troca de tela limpa (sem pixelar) e fade suave."""
 
 from __future__ import annotations
 
@@ -48,11 +48,11 @@ DANGER_HOVER = "#8B263E"
 
 
 class MixersApp(ctk.CTk):
-    """Painel minimalista estilo EarTrumpet com cor nativa do Windows e abertura instantânea."""
+    """Painel minimalista estilo EarTrumpet com cor do sistema e animações naturais."""
 
     WINDOW_WIDTH = 356
-    MIN_HEIGHT = 175
-    MAX_HEIGHT = 560
+    MIN_HEIGHT = 330
+    MAX_HEIGHT = 540
     SESSION_REFRESH_MS = 3000
     METER_REFRESH_MS = 140
     METER_EPSILON = 0.02
@@ -96,7 +96,7 @@ class MixersApp(ctk.CTk):
         self._recording_hotkey = False
         self._is_visible = not start_minimized
         self._anim_token = 0
-        self._cur_height = 320
+        self._cur_height = 360
 
         self._session_timer_id: str | None = None
         self._meter_timer_id: str | None = None
@@ -120,6 +120,7 @@ class MixersApp(ctk.CTk):
         self._selected_profile = ctk.StringVar(value="Sem perfis salvos")
         self._autostart_var = ctk.BooleanVar(value=is_autostart_enabled())
         self._animations_var = ctk.BooleanVar(value=self._animations_enabled)
+        self._pinned_var = ctk.BooleanVar(value=False)
         self._pending_update: UpdateInfo | None = None
         self._updating = False
 
@@ -131,7 +132,7 @@ class MixersApp(ctk.CTk):
                 pass
         self.attributes("-topmost", True)
         try:
-            self.attributes("-alpha", self._alpha)
+            self.attributes("-alpha", 0.0 if (not start_minimized and self._animations_enabled) else self._alpha)
         except Exception:
             pass
 
@@ -170,18 +171,17 @@ class MixersApp(ctk.CTk):
 
         if start_minimized:
             self.withdraw()
-            # Pré-carrega sessões em background para a primeira abertura já ser instantânea
             self.after(200, lambda: self.refresh_audio_state(force_rebuild=True))
         else:
             self.refresh_audio_state(force_rebuild=True)
             if self._animations_enabled:
-                self._animate_open()
+                self._animate_fade(0.0, self._alpha, duration_ms=95)
             self._start_live_loops()
 
         self.after(3000, lambda: self.check_updates_async(manual=False))
 
     # ------------------------------------------------------------------
-    # Helper para criar sliders já com a cor do Windows
+    # Helper para criar sliders com a cor do Windows
     # ------------------------------------------------------------------
     def _make_slider(
         self,
@@ -209,88 +209,75 @@ class MixersApp(ctk.CTk):
         )
 
     # ------------------------------------------------------------------
-    # Altura automática + animação ultraleve (zero geometry() durante fade!)
+    # Geometria estável + Fade natural baseado em tempo real (sem pixelar!)
     # ------------------------------------------------------------------
     def _desired_height(self) -> int:
-        h = 90
+        # Altura fixa mínima de 330px garante que a tela de Ajustes caiba SEM redimensionar a janela!
+        h = 92
         if self._pending_update is not None:
-            h += 36
-        if self._settings_open:
-            h += 224
+            h += 34
 
         app_count = max(1, len(self._current_sessions))
-        h += min(app_count, 6) * 44 + 10
+        h += min(app_count, 5) * 44 + 10
 
         h += 38
         if self._mics_expanded:
             mic_count = max(1, len(self._current_mics))
-            h += min(mic_count, 3) * 44 + 8
+            h += min(mic_count, 2) * 44 + 8
 
         return max(self.MIN_HEIGHT, min(self.MAX_HEIGHT, h))
 
     def _update_window_geometry(self) -> None:
-        self._cur_height = self._desired_height()
+        new_h = self._desired_height()
+        self._cur_height = new_h
         try:
             scale = float(self._get_window_scaling())
         except Exception:
             scale = 1.0
 
         win_w_px = int(round(self.WINDOW_WIDTH * scale))
-        win_h_px = int(round(self._cur_height * scale))
+        win_h_px = int(round(new_h * scale))
         work_area = get_work_area(self.winfo_screenwidth(), self.winfo_screenheight())
         x, y = compute_bottom_right_position(win_w_px, win_h_px, work_area, margin=10)
-        self.geometry(f"{self.WINDOW_WIDTH}x{self._cur_height}+{x}+{y}")
+        self.geometry(f"{self.WINDOW_WIDTH}x{new_h}+{x}+{y}")
 
-    def _animate_open(self) -> None:
-        """Fade-in ultraleve (5 passos de 12ms = 60ms, sem chamar geometry() — zero travamento!)."""
+    def _animate_fade(
+        self,
+        start_alpha: float,
+        end_alpha: float,
+        duration_ms: int,
+        on_done=None,
+    ) -> None:
+        """Fade suave baseado em relógio real (ease-out cúbico, zero geometry() / zero pixelação)."""
         self._anim_token += 1
         token = self._anim_token
-        steps = 5
+        t0 = time.perf_counter()
+        dur_s = max(0.02, duration_ms / 1000.0)
 
         try:
-            self.attributes("-alpha", 0.15)
+            self.attributes("-alpha", round(start_alpha, 3))
         except Exception:
+            if on_done:
+                on_done()
             return
 
-        def _step(i: int) -> None:
-            if token != self._anim_token or not self._is_visible:
+        def _tick() -> None:
+            if token != self._anim_token:
                 return
-            t = i / steps
-            cur_alpha = round(0.15 + (self._alpha - 0.15) * t, 3)
+            progress = min(1.0, (time.perf_counter() - t0) / dur_s)
+            # Curva ease-out suave e natural
+            eased = 1.0 - (1.0 - progress) ** 3
+            val = start_alpha + (end_alpha - start_alpha) * eased
             try:
-                self.attributes("-alpha", cur_alpha)
-            except Exception:
-                return
-            if i < steps:
-                self.after(12, lambda: _step(i + 1))
-
-        self.after(12, lambda: _step(1))
-
-    def _animate_close(self) -> None:
-        """Fade-out rápido (4 passos de 11ms = 44ms) ou instantâneo se animações desligadas."""
-        self._anim_token += 1
-        token = self._anim_token
-        steps = 4
-
-        def _step(i: int) -> None:
-            if token != self._anim_token or self._is_visible:
-                return
-            t = i / steps
-            cur_alpha = max(0.0, round(self._alpha * (1.0 - t), 3))
-            try:
-                self.attributes("-alpha", cur_alpha)
+                self.attributes("-alpha", max(0.0, min(1.0, round(val, 3))))
             except Exception:
                 pass
-            if i < steps:
-                self.after(11, lambda: _step(i + 1))
-            else:
-                self.withdraw()
-                try:
-                    self.attributes("-alpha", self._alpha)
-                except Exception:
-                    pass
+            if progress < 1.0:
+                self.after(12, _tick)
+            elif on_done:
+                on_done()
 
-        _step(1)
+        self.after(10, _tick)
 
     def _apply_native_window_effects(self) -> None:
         if sys.platform != "win32":
@@ -302,7 +289,7 @@ class MixersApp(ctk.CTk):
             pass
 
     # ------------------------------------------------------------------
-    # Layout Fiel ao EarTrumpet com Cor Dinâmica do Windows
+    # Layout com 2 views sobrepostas (Mixer <-> Ajustes) sem esticar a janela!
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
         t = self.theme
@@ -310,13 +297,19 @@ class MixersApp(ctk.CTk):
         self.outer = tk.Frame(self, bg=t["panel_border"], bd=0)
         self.outer.pack(fill="both", expand=True)
 
-        self.shell = tk.Frame(self.outer, bg=t["list_band"], bd=0)
-        self.shell.pack(fill="both", expand=True, padx=1, pady=1)
-        self.shell.grid_columnconfigure(0, weight=1)
-        self.shell.grid_rowconfigure(3, weight=1)
+        self.stage = tk.Frame(self.outer, bg=t["list_band"], bd=0)
+        self.stage.pack(fill="both", expand=True, padx=1, pady=1)
+        self.stage.grid_columnconfigure(0, weight=1)
+        self.stage.grid_rowconfigure(0, weight=1)
 
-        # Row 0: Faixa Master (tingida com a cor do sistema!)
-        master_band = tk.Frame(self.shell, bg=t["header_band"], bd=0)
+        # === VIEW 1: MIXER PRINCIPAL ===
+        self.mixer_view = tk.Frame(self.stage, bg=t["list_band"], bd=0)
+        self.mixer_view.grid(row=0, column=0, sticky="nsew")
+        self.mixer_view.grid_columnconfigure(0, weight=1)
+        self.mixer_view.grid_rowconfigure(2, weight=1)
+
+        # Faixa Master
+        master_band = tk.Frame(self.mixer_view, bg=t["header_band"], bd=0)
         master_band.grid(row=0, column=0, sticky="ew")
         master_band.grid_columnconfigure(1, weight=1)
 
@@ -344,7 +337,7 @@ class MixersApp(ctk.CTk):
             fg_color="transparent",
             hover_color=t["header_hover"],
             text_color="#C8C4D8",
-            command=self._toggle_settings_drawer,
+            command=self._open_settings_view,
         )
         self.settings_btn.grid(row=0, column=1, padx=(4, 2))
 
@@ -395,8 +388,8 @@ class MixersApp(ctk.CTk):
         )
         self.master_pct_lbl.grid(row=1, column=2, padx=(6, 16), pady=(4, 12))
 
-        # Row 1: Banner de atualização disponível
-        self.update_banner = tk.Frame(self.shell, bg=t["drawer_band"], bd=0)
+        # Banner discreto de atualização disponível
+        self.update_banner = tk.Frame(self.mixer_view, bg=t["drawer_band"], bd=0)
         self.update_banner.grid_columnconfigure(0, weight=1)
 
         self.update_banner_lbl = tk.Label(
@@ -407,7 +400,7 @@ class MixersApp(ctk.CTk):
             fg=t["text_primary"],
             anchor="w",
         )
-        self.update_banner_lbl.grid(row=0, column=0, padx=14, pady=6, sticky="w")
+        self.update_banner_lbl.grid(row=0, column=0, padx=14, pady=5, sticky="w")
 
         self.update_now_btn = ctk.CTkButton(
             self.update_banner,
@@ -421,206 +414,16 @@ class MixersApp(ctk.CTk):
             text_color="#FFFFFF",
             command=self._start_update_download,
         )
-        self.update_now_btn.grid(row=0, column=1, padx=(4, 12), pady=6)
+        self.update_now_btn.grid(row=0, column=1, padx=(4, 12), pady=5)
 
-        # Row 2: Gaveta de Ajustes (oculta por padrão)
-        self.settings_drawer = tk.Frame(self.shell, bg=t["drawer_band"], bd=0)
-        self.settings_drawer.grid_columnconfigure(1, weight=1)
-
-        tk.Label(
-            self.settings_drawer,
-            text="Opacidade",
-            font=("Segoe UI", 9),
-            bg=t["drawer_band"],
-            fg=t["text_muted"],
-        ).grid(row=0, column=0, padx=(14, 6), pady=(8, 4), sticky="w")
-
-        self.alpha_slider = self._make_slider(
-            self.settings_drawer,
-            bg_color=t["drawer_band"],
-            value=int(round(self._alpha * 100)),
-            on_change=self._on_alpha_change,
-            height=22,
-        )
-        self.alpha_slider.grid(row=0, column=1, padx=4, pady=(8, 4), sticky="ew")
-
-        self.alpha_lbl = tk.Label(
-            self.settings_drawer,
-            text=f"{int(round(self._alpha * 100))}%",
-            width=4,
-            font=("Segoe UI", 9),
-            bg=t["drawer_band"],
-            fg=t["text_primary"],
-        )
-        self.alpha_lbl.grid(row=0, column=2, padx=(4, 12), pady=(8, 4))
-
-        # Switch para ativar/desativar animações ("sequinho")
-        anim_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        anim_row.grid(row=1, column=0, columnspan=3, padx=14, pady=(0, 6), sticky="ew")
-
-        self.animations_switch = ctk.CTkSwitch(
-            anim_row,
-            text="Animações ao abrir/fechar",
-            variable=self._animations_var,
-            font=ctk.CTkFont(size=10),
-            progress_color=t["accent"],
-            command=self._on_animations_switch,
-        )
-        self.animations_switch.pack(side="left")
-
-        hk_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        hk_row.grid(row=2, column=0, columnspan=3, padx=14, pady=(0, 6), sticky="ew")
-
-        tk.Label(
-            hk_row, text="Atalho:", font=("Segoe UI", 9), bg=t["drawer_band"], fg=t["text_muted"]
-        ).pack(side="left", padx=(0, 6))
-
-        self.hotkey_badge = tk.Label(
-            hk_row,
-            text="Ctrl+Alt+M",
-            font=("Segoe UI", 9, "bold"),
-            bg=t["list_band"],
-            fg=t["badge_fg"],
-            padx=6,
-            pady=1,
-        )
-        self.hotkey_badge.pack(side="left")
-
-        self.record_hotkey_btn = ctk.CTkButton(
-            hk_row,
-            text="Gravar",
-            width=56,
-            height=21,
-            corner_radius=6,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=t["pill_bg"],
-            hover_color=t["pill_hover"],
-            command=self._toggle_record_hotkey,
-        )
-        self.record_hotkey_btn.pack(side="right", padx=(4, 0))
-
-        ctk.CTkButton(
-            hk_row,
-            text="Limpar",
-            width=46,
-            height=21,
-            corner_radius=6,
-            font=ctk.CTkFont(size=10),
-            fg_color="transparent",
-            hover_color=DANGER_BG,
-            text_color=t["text_muted"],
-            command=self._clear_hotkey,
-        ).pack(side="right")
-
-        quick_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        quick_row.grid(row=3, column=0, columnspan=3, padx=14, pady=(0, 6), sticky="ew")
-
-        ctk.CTkButton(
-            quick_row, text="100% Tudo", width=68, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
-            command=self._preset_full_volume,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            quick_row, text="Foco 30%", width=64, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
-            command=self._preset_focus_mode,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            quick_row, text="Mutar Apps", width=70, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=DANGER_BG, hover_color=DANGER_HOVER,
-            command=self._preset_mute_all_apps,
-        ).pack(side="left", padx=(0, 4))
-
-        self.pin_btn = ctk.CTkButton(
-            quick_row, text="Fixar", width=46, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
-            text_color=t["text_muted"], command=self._toggle_pin,
-        )
-        self.pin_btn.pack(side="right")
-
-        prof_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        prof_row.grid(row=4, column=0, columnspan=3, padx=14, pady=(0, 6), sticky="ew")
-
-        self.profile_menu = ctk.CTkOptionMenu(
-            prof_row,
-            variable=self._selected_profile,
-            values=self._get_profile_options(),
-            width=136,
-            height=22,
-            font=ctk.CTkFont(size=10),
-            fg_color=t["list_band"],
-            button_color=t["pill_bg"],
-            button_hover_color=t["accent"],
-        )
-        self.profile_menu.pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            prof_row, text="Aplicar", width=48, height=22, corner_radius=6,
-            font=ctk.CTkFont(size=10, weight="bold"),
-            fg_color=t["accent"], hover_color=t["accent_hover"],
-            command=self._apply_selected_profile,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            prof_row, text="Salvar", width=44, height=22, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
-            command=self._save_profile_dialog,
-        ).pack(side="left", padx=(0, 4))
-
-        ctk.CTkButton(
-            prof_row, text="X", width=24, height=22, corner_radius=6,
-            font=ctk.CTkFont(size=10, weight="bold"), fg_color=t["pill_bg"], hover_color=DANGER_BG,
-            command=self._delete_selected_profile,
-        ).pack(side="left")
-
-        sys_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        sys_row.grid(row=5, column=0, columnspan=3, padx=14, pady=(0, 4), sticky="ew")
-
-        self.autostart_switch = ctk.CTkSwitch(
-            sys_row,
-            text="Iniciar com Windows",
-            variable=self._autostart_var,
-            font=ctk.CTkFont(size=10),
-            progress_color=t["accent"],
-            command=self._on_autostart_switch,
-        )
-        self.autostart_switch.pack(side="left")
-
-        ctk.CTkButton(
-            sys_row, text="Sair", width=42, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color="transparent", hover_color=DANGER_BG,
-            text_color=t["text_muted"], command=self.quit_app,
-        ).pack(side="right")
-
-        upd_row = tk.Frame(self.settings_drawer, bg=t["drawer_band"], bd=0)
-        upd_row.grid(row=6, column=0, columnspan=3, padx=14, pady=(0, 8), sticky="ew")
-
-        self.status_lbl = tk.Label(
-            upd_row,
-            text=f"Mixers v{__version__}",
-            anchor="w",
-            font=("Segoe UI", 9),
-            bg=t["drawer_band"],
-            fg=t["text_muted"],
-        )
-        self.status_lbl.pack(side="left", fill="x", expand=True)
-
-        ctk.CTkButton(
-            upd_row, text="Atualizações", width=78, height=21, corner_radius=6,
-            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
-            command=lambda: self.check_updates_async(manual=True),
-        ).pack(side="right")
-
-        # Row 3: Lista limpa de Apps (sem barra de rolagem visível)
+        # Lista limpa de Apps (sem barra de rolagem visível)
         self.apps_canvas = tk.Canvas(
-            self.shell,
+            self.mixer_view,
             bg=t["list_band"],
             highlightthickness=0,
             bd=0,
         )
-        self.apps_canvas.grid(row=3, column=0, sticky="nsew", pady=(4, 4))
+        self.apps_canvas.grid(row=2, column=0, sticky="nsew", pady=(4, 4))
 
         self.apps_inner = tk.Frame(self.apps_canvas, bg=t["list_band"], bd=0)
         self.apps_inner.grid_columnconfigure(0, weight=1)
@@ -637,9 +440,9 @@ class MixersApp(ctk.CTk):
         )
         self.apps_canvas.bind("<MouseWheel>", self._on_apps_wheel)
 
-        # Row 4: Segunda faixa — Microfones (com a mesma cor do sistema!)
-        mics_header = tk.Frame(self.shell, bg=t["mics_band"], bd=0)
-        mics_header.grid(row=4, column=0, sticky="ew")
+        # Segunda faixa: Microfones
+        mics_header = tk.Frame(self.mixer_view, bg=t["mics_band"], bd=0)
+        mics_header.grid(row=3, column=0, sticky="ew")
         mics_header.grid_columnconfigure(0, weight=1)
 
         mics_title = tk.Label(
@@ -680,15 +483,247 @@ class MixersApp(ctk.CTk):
         self.mics_arrow_lbl.grid(row=0, column=2, padx=(0, 12), pady=6)
         self.mics_arrow_lbl.bind("<Button-1>", lambda _e: self._toggle_mics_section())
 
-        self.mics_body = tk.Frame(self.shell, bg=t["list_band"], bd=0)
+        self.mics_body = tk.Frame(self.mixer_view, bg=t["list_band"], bd=0)
         self.mics_body.grid_columnconfigure(0, weight=1)
         if self._mics_expanded:
-            self.mics_body.grid(row=5, column=0, pady=(4, 6), sticky="ew")
+            self.mics_body.grid(row=4, column=0, pady=(4, 6), sticky="ew")
+
+        # === VIEW 2: AJUSTES (troca instantânea no mesmo espaço, ZERO pixelação!) ===
+        self.settings_view = tk.Frame(self.stage, bg=t["list_band"], bd=0)
+        self.settings_view.grid(row=0, column=0, sticky="nsew")
+        self.settings_view.grid_columnconfigure(0, weight=1)
+        self.settings_view.grid_rowconfigure(1, weight=1)
+
+        # Cabeçalho de Ajustes com botão Voltar (←)
+        set_header = tk.Frame(self.settings_view, bg=t["header_band"], bd=0)
+        set_header.grid(row=0, column=0, sticky="ew")
+        set_header.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkButton(
+            set_header,
+            text="←",
+            width=28,
+            height=26,
+            corner_radius=6,
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color="transparent",
+            hover_color=t["header_hover"],
+            text_color=t["text_primary"],
+            command=self._close_settings_view,
+        ).grid(row=0, column=0, padx=(10, 4), pady=8)
+
+        tk.Label(
+            set_header,
+            text="Ajustes",
+            font=("Segoe UI", 11, "bold"),
+            bg=t["header_band"],
+            fg=t["text_primary"],
+            anchor="w",
+        ).grid(row=0, column=1, pady=8, sticky="w")
+
+        tk.Label(
+            set_header,
+            text=f"v{__version__}",
+            font=("Segoe UI", 9),
+            bg=t["header_band"],
+            fg="#C8C4D8",
+        ).grid(row=0, column=2, padx=(4, 14), pady=8, sticky="e")
+
+        # Corpo limpo de Ajustes
+        set_body = tk.Frame(self.settings_view, bg=t["list_band"], bd=0)
+        set_body.grid(row=1, column=0, padx=14, pady=10, sticky="nsew")
+        set_body.grid_columnconfigure(1, weight=1)
+
+        # Opacidade
+        tk.Label(
+            set_body, text="Opacidade", font=("Segoe UI", 9),
+            bg=t["list_band"], fg=t["text_muted"],
+        ).grid(row=0, column=0, pady=(2, 8), sticky="w")
+
+        self.alpha_slider = self._make_slider(
+            set_body,
+            bg_color=t["list_band"],
+            value=int(round(self._alpha * 100)),
+            on_change=self._on_alpha_change,
+            height=22,
+        )
+        self.alpha_slider.grid(row=0, column=1, padx=8, pady=(2, 8), sticky="ew")
+
+        self.alpha_lbl = tk.Label(
+            set_body, text=f"{int(round(self._alpha * 100))}%", width=4,
+            font=("Segoe UI", 9), bg=t["list_band"], fg=t["text_primary"],
+        )
+        self.alpha_lbl.grid(row=0, column=2, pady=(2, 8), sticky="e")
+
+        # Switches (Animações, Autostart, Fixar)
+        self.animations_switch = ctk.CTkSwitch(
+            set_body,
+            text="Animações suaves ao abrir/fechar",
+            variable=self._animations_var,
+            font=ctk.CTkFont(size=11),
+            progress_color=t["accent"],
+            command=self._on_animations_switch,
+        )
+        self.animations_switch.grid(row=1, column=0, columnspan=3, pady=(0, 8), sticky="w")
+
+        self.autostart_switch = ctk.CTkSwitch(
+            set_body,
+            text="Iniciar com o Windows",
+            variable=self._autostart_var,
+            font=ctk.CTkFont(size=11),
+            progress_color=t["accent"],
+            command=self._on_autostart_switch,
+        )
+        self.autostart_switch.grid(row=2, column=0, columnspan=3, pady=(0, 8), sticky="w")
+
+        self.pin_switch = ctk.CTkSwitch(
+            set_body,
+            text="Fixar painel na tela",
+            variable=self._pinned_var,
+            font=ctk.CTkFont(size=11),
+            progress_color=t["accent"],
+            command=self._on_pin_switch,
+        )
+        self.pin_switch.grid(row=3, column=0, columnspan=3, pady=(0, 10), sticky="w")
+
+        # Atalho global
+        hk_row = tk.Frame(set_body, bg=t["list_band"], bd=0)
+        hk_row.grid(row=4, column=0, columnspan=3, pady=(0, 10), sticky="ew")
+
+        tk.Label(
+            hk_row, text="Atalho:", font=("Segoe UI", 9), bg=t["list_band"], fg=t["text_muted"]
+        ).pack(side="left", padx=(0, 6))
+
+        self.hotkey_badge = tk.Label(
+            hk_row,
+            text="Ctrl+Alt+M",
+            font=("Segoe UI", 9, "bold"),
+            bg=t["drawer_band"],
+            fg=t["badge_fg"],
+            padx=7,
+            pady=2,
+        )
+        self.hotkey_badge.pack(side="left")
+
+        self.record_hotkey_btn = ctk.CTkButton(
+            hk_row, text="Gravar", width=58, height=22, corner_radius=6,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=t["pill_bg"], hover_color=t["pill_hover"],
+            command=self._toggle_record_hotkey,
+        )
+        self.record_hotkey_btn.pack(side="right", padx=(4, 0))
+
+        ctk.CTkButton(
+            hk_row, text="Limpar", width=48, height=22, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color="transparent", hover_color=DANGER_BG,
+            text_color=t["text_muted"], command=self._clear_hotkey,
+        ).pack(side="right")
+
+        # Presets rápidos
+        quick_row = tk.Frame(set_body, bg=t["list_band"], bd=0)
+        quick_row.grid(row=5, column=0, columnspan=3, pady=(0, 8), sticky="ew")
+
+        ctk.CTkButton(
+            quick_row, text="100% Tudo", width=80, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
+            command=self._preset_full_volume,
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            quick_row, text="Foco 30%", width=74, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
+            command=self._preset_focus_mode,
+        ).pack(side="left", padx=(0, 6))
+
+        ctk.CTkButton(
+            quick_row, text="Mutar Apps", width=80, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color=DANGER_BG, hover_color=DANGER_HOVER,
+            command=self._preset_mute_all_apps,
+        ).pack(side="left")
+
+        # Perfis
+        prof_row = tk.Frame(set_body, bg=t["list_band"], bd=0)
+        prof_row.grid(row=6, column=0, columnspan=3, pady=(0, 10), sticky="ew")
+
+        self.profile_menu = ctk.CTkOptionMenu(
+            prof_row,
+            variable=self._selected_profile,
+            values=self._get_profile_options(),
+            width=142,
+            height=23,
+            font=ctk.CTkFont(size=10),
+            fg_color=t["drawer_band"],
+            button_color=t["pill_bg"],
+            button_hover_color=t["accent"],
+        )
+        self.profile_menu.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            prof_row, text="Aplicar", width=50, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            fg_color=t["accent"], hover_color=t["accent_hover"],
+            command=self._apply_selected_profile,
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            prof_row, text="Salvar", width=46, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
+            command=self._save_profile_dialog,
+        ).pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            prof_row, text="X", width=24, height=23, corner_radius=6,
+            font=ctk.CTkFont(size=10, weight="bold"), fg_color=t["pill_bg"], hover_color=DANGER_BG,
+            command=self._delete_selected_profile,
+        ).pack(side="left")
+
+        # Rodapé de Ajustes: status + atualizações + sair
+        foot_row = tk.Frame(self.settings_view, bg=t["drawer_band"], bd=0)
+        foot_row.grid(row=2, column=0, sticky="ew")
+        foot_row.grid_columnconfigure(0, weight=1)
+
+        self.status_lbl = tk.Label(
+            foot_row,
+            text=f"Mixers v{__version__}",
+            anchor="w",
+            font=("Segoe UI", 9),
+            bg=t["drawer_band"],
+            fg=t["text_muted"],
+        )
+        self.status_lbl.grid(row=0, column=0, padx=(14, 4), pady=8, sticky="ew")
+
+        ctk.CTkButton(
+            foot_row, text="Atualizações", width=80, height=22, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color=t["pill_bg"], hover_color=t["pill_hover"],
+            command=lambda: self.check_updates_async(manual=True),
+        ).grid(row=0, column=1, padx=(0, 6), pady=7)
+
+        ctk.CTkButton(
+            foot_row, text="Sair", width=42, height=22, corner_radius=6,
+            font=ctk.CTkFont(size=10), fg_color="transparent", hover_color=DANGER_BG,
+            text_color=t["text_muted"], command=self.quit_app,
+        ).grid(row=0, column=2, padx=(0, 10), pady=7)
+
+        # Inicia mostrando o Mixer por cima
+        self.mixer_view.tkraise()
 
     def _on_apps_wheel(self, event) -> None:
         bbox = self.apps_canvas.bbox("all")
         if bbox and bbox[3] > self.apps_canvas.winfo_height():
             self.apps_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    # ------------------------------------------------------------------
+    # Troca limpa de telas (Mixer <-> Ajustes) sem redimensionar janela
+    # ------------------------------------------------------------------
+    def _open_settings_view(self) -> None:
+        self._settings_open = True
+        self.settings_view.tkraise()
+
+    def _close_settings_view(self) -> None:
+        self._settings_open = False
+        if self._recording_hotkey:
+            self._cancel_record_hotkey()
+        self.mixer_view.tkraise()
 
     # ------------------------------------------------------------------
     # Timers (0% CPU em segundo plano)
@@ -717,7 +752,7 @@ class MixersApp(ctk.CTk):
             self._meter_timer_id = None
 
     # ------------------------------------------------------------------
-    # Visibilidade instantânea (mostra janela PRIMEIRO, atualiza logo após!)
+    # Visibilidade (abertura instantânea + fade suave opcional)
     # ------------------------------------------------------------------
     def toggle_visibility(self) -> None:
         if self._is_visible:
@@ -728,19 +763,20 @@ class MixersApp(ctk.CTk):
     def show_from_tray(self) -> None:
         self._is_visible = True
         self._anim_token += 1
+        # Sempre abre na tela principal do Mixer
+        if self._settings_open:
+            self._close_settings_view()
         self._update_window_geometry()
-        if not self._animations_enabled:
-            try:
-                self.attributes("-alpha", self._alpha)
-            except Exception:
-                pass
+        try:
+            self.attributes("-alpha", 0.0 if self._animations_enabled else self._alpha)
+        except Exception:
+            pass
         self.deiconify()
         self.lift()
         self.focus_force()
         if self._animations_enabled:
-            self._animate_open()
-        # Atualiza sessões logo após pintar a janela (abertura zero-lag!)
-        self.after(15, lambda: self.refresh_audio_state(force_rebuild=False))
+            self._animate_fade(0.0, self._alpha, duration_ms=95)
+        self.after(20, lambda: self.refresh_audio_state(force_rebuild=False))
         self._start_live_loops()
 
     def hide_to_tray(self) -> None:
@@ -755,7 +791,15 @@ class MixersApp(ctk.CTk):
         self._is_visible = False
         self._stop_live_loops()
         if self._animations_enabled:
-            self._animate_close()
+            def _finish_hide() -> None:
+                if not self._is_visible:
+                    self.withdraw()
+                    try:
+                        self.attributes("-alpha", self._alpha)
+                    except Exception:
+                        pass
+
+            self._animate_fade(self._alpha, 0.0, duration_ms=65, on_done=_finish_hide)
         else:
             self._anim_token += 1
             self.withdraw()
@@ -769,10 +813,8 @@ class MixersApp(ctk.CTk):
         if self._pinned or self._dialog_open or self._recording_hotkey or not self._is_visible:
             return
         try:
-            # Nunca esconde se o usuário ainda estiver interagindo com o próprio Mixers
             if is_our_process_foreground():
                 return
-            # Também não esconde se o ponteiro do mouse ainda estiver dentro do painel
             px, py = self.winfo_pointerxy()
             wx, wy = self.winfo_rootx(), self.winfo_rooty()
             ww, wh = self.winfo_width(), self.winfo_height()
@@ -783,7 +825,6 @@ class MixersApp(ctk.CTk):
             pass
 
     def report_callback_exception(self, exc, val, tb) -> None:
-        """Registra erros inesperados em %APPDATA%/Mixers/mixers.log sem fechar o app."""
         try:
             import traceback
             from pathlib import Path
@@ -821,7 +862,8 @@ class MixersApp(ctk.CTk):
         self._meter_timer_id = None
         if not self._is_visible:
             return
-        self._update_audio_meters()
+        if not self._settings_open:
+            self._update_audio_meters()
         self._meter_timer_id = self.after(
             self.METER_REFRESH_MS, self._schedule_meter_refresh
         )
@@ -896,8 +938,9 @@ class MixersApp(ctk.CTk):
         else:
             self._sync_existing_rows()
 
-        if (mics_changed or keys_changed) and self._is_visible:
-            self._update_window_geometry()
+        if (mics_changed or keys_changed) and self._is_visible and not self._settings_open:
+            if self._desired_height() != self._cur_height:
+                self._update_window_geometry()
 
     # ------------------------------------------------------------------
     # Linhas de Aplicativos
@@ -1038,12 +1081,10 @@ class MixersApp(ctk.CTk):
         self.settings.set("mics_expanded", self._mics_expanded)
         self.mics_arrow_lbl.configure(text="⌄" if self._mics_expanded else "›")
         if self._mics_expanded:
-            self.mics_body.grid(row=5, column=0, pady=(4, 6), sticky="ew")
+            self.mics_body.grid(row=4, column=0, pady=(4, 6), sticky="ew")
         else:
             self._stop_mic_test()
             self.mics_body.grid_forget()
-        if self._is_visible:
-            self._update_window_geometry()
 
     def _render_microphones(self) -> None:
         t = self.theme
@@ -1228,36 +1269,16 @@ class MixersApp(ctk.CTk):
     # ------------------------------------------------------------------
     # Ajustes, Animações, Atalho Global, Perfis & Presets
     # ------------------------------------------------------------------
-    def _toggle_settings_drawer(self) -> None:
-        self._settings_open = not self._settings_open
-        if self._settings_open:
-            self.settings_drawer.grid(row=2, column=0, sticky="ew")
-            self.settings_btn.configure(fg_color=self.theme["accent"], text_color="#FFFFFF")
-        else:
-            if self._recording_hotkey:
-                self._cancel_record_hotkey()
-            self.settings_drawer.grid_forget()
-            self.settings_btn.configure(fg_color="transparent", text_color="#C8C4D8")
-        if self._is_visible:
-            self._update_window_geometry()
-
     def _on_animations_switch(self) -> None:
         self._animations_enabled = bool(self._animations_var.get())
         self.settings.set("animations", self._animations_enabled)
         self._set_status(
-            "Animações ativadas." if self._animations_enabled else "Modo sequinho (sem animações)."
+            "Animações ativadas." if self._animations_enabled else "Modo sequinho ativo."
         )
 
-    def _toggle_pin(self) -> None:
-        self._pinned = not self._pinned
-        if self._pinned:
-            self.pin_btn.configure(fg_color=self.theme["accent"], text_color="#FFFFFF")
-            self._set_status("Painel fixado.")
-        else:
-            self.pin_btn.configure(
-                fg_color=self.theme["pill_bg"], text_color=self.theme["text_muted"]
-            )
-            self._set_status("Oculta ao clicar fora.")
+    def _on_pin_switch(self) -> None:
+        self._pinned = bool(self._pinned_var.get())
+        self._set_status("Painel fixado." if self._pinned else "Oculta ao clicar fora.")
 
     def _on_alpha_change(self, pct: int) -> None:
         clamped = max(65, min(100, int(pct)))
@@ -1267,7 +1288,6 @@ class MixersApp(ctk.CTk):
             self.attributes("-alpha", self._alpha)
         except Exception:
             pass
-        # Debounce da gravação em disco para não travar enquanto arrasta
         if self._alpha_save_timer_id is not None:
             try:
                 self.after_cancel(self._alpha_save_timer_id)
@@ -1323,7 +1343,10 @@ class MixersApp(ctk.CTk):
         keysym = str(getattr(event, "keysym", ""))
         if not self._recording_hotkey:
             if keysym == "Escape":
-                self.hide_to_tray()
+                if self._settings_open:
+                    self._close_settings_view()
+                else:
+                    self.hide_to_tray()
             return
 
         if keysym == "Escape":
@@ -1373,6 +1396,7 @@ class MixersApp(ctk.CTk):
             self.backend.set_app_volume(app_id, 1.0)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
+            self._set_status("Apps em 100%.")
 
     def _preset_focus_mode(self) -> None:
         for app_id in list(self._current_sessions):
@@ -1380,12 +1404,14 @@ class MixersApp(ctk.CTk):
             self.backend.set_app_volume(app_id, 0.30)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
+            self._set_status("Modo Foco (30%).")
 
     def _preset_mute_all_apps(self) -> None:
         for app_id in list(self._current_sessions):
             self.backend.set_app_mute(app_id, True)
         if self._is_visible:
             self.refresh_audio_state(force_rebuild=False)
+            self._set_status("Apps mutados.")
 
     def _get_profile_options(self) -> list[str]:
         names = self.profile_manager.list_names()
@@ -1458,9 +1484,9 @@ class MixersApp(ctk.CTk):
             self._pending_update = info
             self.update_banner_lbl.configure(text=f"Nova versão v{info.version} disponível!")
             self.update_banner.grid(row=1, column=0, sticky="ew")
-            if self._is_visible:
+            if self._is_visible and not self._settings_open:
                 self._update_window_geometry()
-            self._set_status(f"v{info.version} pronta.")
+            self._set_status(f"v{info.version} pronta (volte ao Mixer).")
         elif manual:
             self._set_status(f"Atualizado (v{__version__}).")
 
